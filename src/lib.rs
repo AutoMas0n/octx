@@ -1,5 +1,6 @@
 pub mod error;
 pub mod paths;
+pub mod platform;
 
 pub use error::OctxError;
 
