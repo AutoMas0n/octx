@@ -1,5 +1,5 @@
 [package]
-name = "stx"
+name = "octx"
 version = "0.1.0"
 edition = "2024"
 
@@ -7,6 +7,12 @@ edition = "2024"
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+dirs = "6"
 
 [profile.release]
 lto = true

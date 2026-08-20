@@ -1,4 +1,4 @@
-use stx::{run, CliArgs};
+use octx::{CliArgs, run};
 
 #[test]
 fn test_run_returns_greeting() {
@@ -6,5 +6,5 @@ fn test_run_returns_greeting() {
         name: Some("World".into()),
     };
     let result = run(&args).unwrap();
-    assert_eq!(result, "Hello from stx library!");
+    assert_eq!(result, "Hello from octx library!");
 }

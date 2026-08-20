@@ -1,4 +1,4 @@
-# AGENTS.md — stx
+# AGENTS.md — octx
 
 ## Project structure
 - Use clap for argument parsing (the de facto standard)

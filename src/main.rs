@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
-use stx::{run, CliArgs};
+use octx::{CliArgs, run};
 
 fn main() -> Result<()> {
     let args = CliArgs::parse();
