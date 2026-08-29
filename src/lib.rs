@@ -1,5 +1,6 @@
 pub mod config;
 pub mod error;
+pub mod install;
 pub mod manifest;
 pub mod paths;
 pub mod platform;
