@@ -1,6 +1,9 @@
+pub mod config;
 pub mod error;
+pub mod manifest;
 pub mod paths;
 pub mod platform;
+pub mod util;
 
 pub use error::OctxError;
 
