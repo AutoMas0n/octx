@@ -18,6 +18,9 @@ chrono = "0.4"
 hex = "0.4"
 fs2 = "0.4"
 toml = "0.8"
+aes-gcm = "0.10"
+argon2 = "0.5"
+rand = "0.8"
 
 [profile.release]
 lto = true
