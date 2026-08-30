@@ -1,0 +1,12 @@
+[package]
+name = "octx-deploy"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "deploy"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+anyhow.workspace = true

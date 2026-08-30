@@ -1,7 +1,19 @@
-[package]
-name = "octx"
+[workspace]
+members = ["arms/*"]
+resolver = "2"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
+
+[workspace.dependencies]
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+
+[package]
+name = "octx"
+version.workspace = true
+edition.workspace = true
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
@@ -24,6 +36,8 @@ rand = "0.8"
 rpassword = "7"
 
 [profile.release]
+opt-level = "z"
 lto = true
 strip = "symbols"
 codegen-units = 1
+panic = "abort"

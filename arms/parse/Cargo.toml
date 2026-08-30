@@ -1,0 +1,12 @@
+[package]
+name = "octx-parse"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "parse"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+anyhow.workspace = true
