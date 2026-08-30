@@ -1,10 +1,8 @@
-use anyhow::Result;
-use clap::Parser;
-use octx::{CliArgs, run};
-
-fn main() -> Result<()> {
-    let args = CliArgs::parse();
-    let output = run(&args)?;
-    println!("{output}");
-    Ok(())
+/// Octopus CLI — your tooling, one head, many arms.
+#[tokio::main]
+async fn main() {
+    if let Err(e) = octx::cli::run().await {
+        eprintln!("error: {}", e);
+        std::process::exit(e.exit_code());
+    }
 }
