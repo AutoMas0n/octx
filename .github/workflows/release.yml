@@ -1,0 +1,247 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 0 * * 0'  # weekly Sunday midnight
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - run: cargo check
+      - run: cargo test
+      - run: cargo clippy -- -D warnings
+      - run: cargo fmt --check
+
+  audit:
+    if: github.event_name == 'schedule' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - run: cargo audit
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test]
+    strategy:
+      matrix:
+        target:
+          - x86_64-unknown-linux-musl
+          - armv6-unknown-linux-gnueabihf
+          - aarch64-unknown-linux-musl
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: ${{ matrix.target }}
+      - name: Install cross-compilation tools
+        run: |
+          sudo apt-get update
+          case ${{ matrix.target }} in
+            x86_64-unknown-linux-musl)
+              sudo apt-get install -y musl-tools
+              ;;
+            armv6-unknown-linux-gnueabihf)
+              sudo apt-get install -y gcc-arm-linux-gnueabihf
+              echo "CC_armv6_unknown_linux_gnueabihf=arm-linux-gnueabihf-gcc" >> "$GITHUB_ENV"
+              echo "AR_armv6_unknown_linux_gnueabihf=arm-linux-gnueabihf-ar" >> "$GITHUB_ENV"
+              ;;
+            aarch64-unknown-linux-musl)
+              sudo apt-get install -y gcc-aarch64-linux-gnu musl-tools
+              echo "CC_aarch64_unknown_linux_musl=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+              echo "AR_aarch64_unknown_linux_musl=aarch64-linux-gnu-ar" >> "$GITHUB_ENV"
+              ;;
+          esac
+      - name: Build head
+        run: cargo build --target ${{ matrix.target }} --release
+      - name: Build arms
+        run: |
+          for arm in octx-fmt octx-parse octx-deploy; do
+            cargo build -p "$arm" --target ${{ matrix.target }} --release
+          done
+      - name: Prepare artifacts
+        run: |
+          mkdir -p artifacts
+          # Head
+          cp "target/${{ matrix.target }}/release/octx" octx
+          gzip -c octx > "artifacts/octx-${{ matrix.target }}.gz"
+          sha256sum "artifacts/octx-${{ matrix.target }}.gz" | cut -d' ' -f1 > "artifacts/octx-${{ matrix.target }}.gz.sha256"
+          # Arms
+          for arm in fmt parse deploy; do
+            cp "target/${{ matrix.target }}/release/$arm" "$arm"
+            gzip -c "$arm" > "artifacts/$arm-${{ matrix.target }}.gz"
+            sha256sum "artifacts/$arm-${{ matrix.target }}.gz" | cut -d' ' -f1 > "artifacts/$arm-${{ matrix.target }}.gz.sha256"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: artifacts-${{ matrix.target }}
+          path: artifacts/
+          if-no-files-found: error
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Generate registry-index.json
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          # Build sha256 maps per target
+          declare -A HEAD_SHA
+          declare -A FMT_SHA
+          declare -A PARSE_SHA
+          declare -A DEPLOY_SHA
+
+          for target in x86_64-unknown-linux-musl armv6-unknown-linux-gnueabihf aarch64-unknown-linux-musl; do
+            HEAD_SHA[$target]=$(cat "artifacts/artifacts-$target/octx-$target.gz.sha256")
+            FMT_SHA[$target]=$(cat "artifacts/artifacts-$target/fmt-$target.gz.sha256")
+            PARSE_SHA[$target]=$(cat "artifacts/artifacts-$target/parse-$target.gz.sha256")
+            DEPLOY_SHA[$target]=$(cat "artifacts/artifacts-$target/deploy-$target.gz.sha256")
+          done
+
+          BASE_URL="https://github.com/AutoMas0n/octx/releases/download/v${VERSION}"
+
+          jq -n \
+            --arg version "$VERSION" \
+            --arg ts "$TIMESTAMP" \
+            --arg base "$BASE_URL" \
+            --arg head_x86 "$(jq -R -s '.' <<<"${HEAD_SHA[x86_64-unknown-linux-musl]}")" \
+            --arg head_arm "$(jq -R -s '.' <<<"${HEAD_SHA[armv6-unknown-linux-gnueabihf]}")" \
+            --arg head_aarch64 "$(jq -R -s '.' <<<"${HEAD_SHA[aarch64-unknown-linux-musl]}")" \
+            --arg fmt_x86 "$(jq -R -s '.' <<<"${FMT_SHA[x86_64-unknown-linux-musl]}")" \
+            --arg fmt_arm "$(jq -R -s '.' <<<"${FMT_SHA[armv6-unknown-linux-gnueabihf]}")" \
+            --arg fmt_aarch64 "$(jq -R -s '.' <<<"${FMT_SHA[aarch64-unknown-linux-musl]}")" \
+            --arg parse_x86 "$(jq -R -s '.' <<<"${PARSE_SHA[x86_64-unknown-linux-musl]}")" \
+            --arg parse_arm "$(jq -R -s '.' <<<"${PARSE_SHA[armv6-unknown-linux-gnueabihf]}")" \
+            --arg parse_aarch64 "$(jq -R -s '.' <<<"${PARSE_SHA[aarch64-unknown-linux-musl]}")" \
+            --arg deploy_x86 "$(jq -R -s '.' <<<"${DEPLOY_SHA[x86_64-unknown-linux-musl]}")" \
+            --arg deploy_arm "$(jq -R -s '.' <<<"${DEPLOY_SHA[armv6-unknown-linux-gnueabihf]}")" \
+            --arg deploy_aarch64 "$(jq -R -s '.' <<<"${DEPLOY_SHA[aarch64-unknown-linux-musl]}")" \
+            '{
+              registry_version: 1,
+              updated: $ts,
+              head: {
+                version: $version,
+                etag: ("\"" + ($head_x86 | .[0:16]) + "\""),
+                downloads: {
+                  "x86_64-unknown-linux-musl": {
+                    url: ($base + "/octx-x86_64-unknown-linux-musl.gz"),
+                    sha256: $head_x86
+                  },
+                  "armv6-unknown-linux-gnueabihf": {
+                    url: ($base + "/octx-armv6-unknown-linux-gnueabihf.gz"),
+                    sha256: $head_arm
+                  },
+                  "aarch64-unknown-linux-musl": {
+                    url: ($base + "/octx-aarch64-unknown-linux-musl.gz"),
+                    sha256: $head_aarch64
+                  }
+                }
+              },
+              arms: {
+                fmt: {
+                  description: "Opinionated code formatter",
+                  repository: "https://github.com/AutoMas0n/octx",
+                  skill_url: ($base + "/fmt.skill.md"),
+                  versions: {
+                    ($version): {
+                      downloads: {
+                        "x86_64-unknown-linux-musl": {
+                          url: ($base + "/fmt-x86_64-unknown-linux-musl.gz"),
+                          sha256: $fmt_x86
+                        },
+                        "armv6-unknown-linux-gnueabihf": {
+                          url: ($base + "/fmt-armv6-unknown-linux-gnueabihf.gz"),
+                          sha256: $fmt_arm
+                        },
+                        "aarch64-unknown-linux-musl": {
+                          url: ($base + "/fmt-aarch64-unknown-linux-musl.gz"),
+                          sha256: $fmt_aarch64
+                        }
+                      }
+                    }
+                  }
+                },
+                parse: {
+                  description: "File parser",
+                  repository: "https://github.com/AutoMas0n/octx",
+                  skill_url: ($base + "/parse.skill.md"),
+                  versions: {
+                    ($version): {
+                      downloads: {
+                        "x86_64-unknown-linux-musl": {
+                          url: ($base + "/parse-x86_64-unknown-linux-musl.gz"),
+                          sha256: $parse_x86
+                        },
+                        "armv6-unknown-linux-gnueabihf": {
+                          url: ($base + "/parse-armv6-unknown-linux-gnueabihf.gz"),
+                          sha256: $parse_arm
+                        },
+                        "aarch64-unknown-linux-musl": {
+                          url: ($base + "/parse-aarch64-unknown-linux-musl.gz"),
+                          sha256: $parse_aarch64
+                        }
+                      }
+                    }
+                  }
+                },
+                deploy: {
+                  description: "Deployment tool",
+                  repository: "https://github.com/AutoMas0n/octx",
+                  skill_url: ($base + "/deploy.skill.md"),
+                  versions: {
+                    ($version): {
+                      downloads: {
+                        "x86_64-unknown-linux-musl": {
+                          url: ($base + "/deploy-x86_64-unknown-linux-musl.gz"),
+                          sha256: $deploy_x86
+                        },
+                        "armv6-unknown-linux-gnueabihf": {
+                          url: ($base + "/deploy-armv6-unknown-linux-gnueabihf.gz"),
+                          sha256: $deploy_arm
+                        },
+                        "aarch64-unknown-linux-musl": {
+                          url: ($base + "/deploy-aarch64-unknown-linux-musl.gz"),
+                          sha256: $deploy_aarch64
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }' > registry-index.json
+
+          echo "Generated registry-index.json:"
+          cat registry-index.json
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/artifacts-x86_64-unknown-linux-musl/*.gz
+            artifacts/artifacts-x86_64-unknown-linux-musl/*.sha256
+            artifacts/artifacts-armv6-unknown-linux-gnueabihf/*.gz
+            artifacts/artifacts-armv6-unknown-linux-gnueabihf/*.sha256
+            artifacts/artifacts-aarch64-unknown-linux-musl/*.gz
+            artifacts/artifacts-aarch64-unknown-linux-musl/*.sha256
+            registry-index.json
+          body: |
+            ## octx ${{ github.ref_name }}
+
+            See [registry-index.json](/${{ github.ref_name }}/registry-index.json) for artifact manifest.
