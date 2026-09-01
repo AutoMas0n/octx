@@ -16,21 +16,40 @@ pub fn detect() -> &'static str {
 }
 
 fn detect_inner() -> Result<String, OctxError> {
-    let output = std::process::Command::new("uname")
+    let arch_output = std::process::Command::new("uname")
         .arg("-m")
         .output()
         .map_err(OctxError::Io)?;
 
-    let arch = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let triple = match arch.as_str() {
-        "x86_64" => "x86_64-unknown-linux-musl",
-        "aarch64" => "aarch64-unknown-linux-musl",
-        "armv6l" => "armv6-unknown-linux-gnueabihf",
-        "armv7l" => "armv7-unknown-linux-gnueabihf",
-        "arm64" => "aarch64-unknown-linux-musl",
+    let arch = String::from_utf8_lossy(&arch_output.stdout)
+        .trim()
+        .to_string();
+
+    // Detect Android via uname -o (returns "Android" on Termux)
+    let is_android = std::process::Command::new("uname")
+        .arg("-o")
+        .output()
+        .ok()
+        .and_then(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .trim()
+                .eq_ignore_ascii_case("android")
+                .then_some(true)
+        })
+        .unwrap_or(false);
+
+    let triple = match (arch.as_str(), is_android) {
+        ("x86_64", false) => "x86_64-unknown-linux-musl",
+        ("aarch64", false) => "aarch64-unknown-linux-musl",
+        ("arm64", false) => "aarch64-unknown-linux-musl",
+        ("armv6l", false) => "armv6-unknown-linux-gnueabihf",
+        ("armv7l", false) => "armv7-unknown-linux-gnueabihf",
+        ("aarch64", true) | ("arm64", true) => "aarch64-linux-android",
+        ("armv7l", true) => "armv7-linux-androideabi",
         other => {
             return Err(OctxError::UnsupportedPlatform(format!(
-                "uname -m returned \"{other}\" — no known target triple"
+                "uname -m returned \"{}\" — no known target triple",
+                other.0
             )));
         }
     };
@@ -51,6 +70,15 @@ pub fn machine_id() -> Result<String, OctxError> {
             if !trimmed.is_empty() {
                 return Ok(trimmed);
             }
+        }
+    }
+
+    // Android / generic Linux fallback: boot_id (UUID unique per boot)
+    // Available on both Android (Termux) and standard Linux.
+    if let Ok(id) = std::fs::read_to_string("/proc/sys/kernel/random/boot_id") {
+        let trimmed = id.trim().to_string();
+        if !trimmed.is_empty() {
+            return Ok(trimmed);
         }
     }
 

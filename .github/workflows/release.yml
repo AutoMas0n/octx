@@ -40,6 +40,8 @@ jobs:
           - x86_64-unknown-linux-musl
           - armv6-unknown-linux-gnueabihf
           - aarch64-unknown-linux-musl
+          - aarch64-linux-android
+          - armv7-linux-androideabi
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -62,6 +64,26 @@ jobs:
               sudo apt-get install -y gcc-aarch64-linux-gnu musl-tools
               echo "CC_aarch64_unknown_linux_musl=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
               echo "AR_aarch64_unknown_linux_musl=aarch64-linux-gnu-ar" >> "$GITHUB_ENV"
+              ;;
+            aarch64-linux-android)
+              rustup target add aarch64-linux-android
+              curl -fsSL https://dl.google.com/android/repository/android-ndk-r27c-linux.zip -o ndk.zip
+              unzip -q ndk.zip
+              NDK_DIR="/tmp/android-ndk-r27c"
+              mv android-ndk-r27c "$NDK_DIR"
+              echo "CC_aarch64_linux_android=$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang" >> "$GITHUB_ENV"
+              echo "AR_aarch64_linux_android=$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" >> "$GITHUB_ENV"
+              echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang" >> "$GITHUB_ENV"
+              ;;
+            armv7-linux-androideabi)
+              rustup target add armv7-linux-androideabi
+              curl -fsSL https://dl.google.com/android/repository/android-ndk-r27c-linux.zip -o ndk.zip
+              unzip -q ndk.zip
+              NDK_DIR="/tmp/android-ndk-r27c"
+              mv android-ndk-r27c "$NDK_DIR"
+              echo "CC_armv7_linux_androideabi=$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi21-clang" >> "$GITHUB_ENV"
+              echo "AR_armv7_linux_androideabi=$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" >> "$GITHUB_ENV"
+              echo "CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER=$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi21-clang" >> "$GITHUB_ENV"
               ;;
           esac
       - name: Build head
@@ -110,7 +132,7 @@ jobs:
           declare -A PARSE_SHA
           declare -A DEPLOY_SHA
 
-          for target in x86_64-unknown-linux-musl armv6-unknown-linux-gnueabihf aarch64-unknown-linux-musl; do
+          for target in x86_64-unknown-linux-musl armv6-unknown-linux-gnueabihf aarch64-unknown-linux-musl aarch64-linux-android armv7-linux-androideabi; do
             HEAD_SHA[$target]=$(cat "artifacts/artifacts-$target/octx-$target.gz.sha256")
             FMT_SHA[$target]=$(cat "artifacts/artifacts-$target/fmt-$target.gz.sha256")
             PARSE_SHA[$target]=$(cat "artifacts/artifacts-$target/parse-$target.gz.sha256")
@@ -126,15 +148,23 @@ jobs:
             --arg head_x86 "$(jq -R -s '.' <<<"${HEAD_SHA[x86_64-unknown-linux-musl]}")" \
             --arg head_arm "$(jq -R -s '.' <<<"${HEAD_SHA[armv6-unknown-linux-gnueabihf]}")" \
             --arg head_aarch64 "$(jq -R -s '.' <<<"${HEAD_SHA[aarch64-unknown-linux-musl]}")" \
+            --arg head_android_a64 "$(jq -R -s '.' <<<"${HEAD_SHA[aarch64-linux-android]}")" \
+            --arg head_android_v7 "$(jq -R -s '.' <<<"${HEAD_SHA[armv7-linux-androideabi]}")" \
             --arg fmt_x86 "$(jq -R -s '.' <<<"${FMT_SHA[x86_64-unknown-linux-musl]}")" \
             --arg fmt_arm "$(jq -R -s '.' <<<"${FMT_SHA[armv6-unknown-linux-gnueabihf]}")" \
             --arg fmt_aarch64 "$(jq -R -s '.' <<<"${FMT_SHA[aarch64-unknown-linux-musl]}")" \
+            --arg fmt_android_a64 "$(jq -R -s '.' <<<"${FMT_SHA[aarch64-linux-android]}")" \
+            --arg fmt_android_v7 "$(jq -R -s '.' <<<"${FMT_SHA[armv7-linux-androideabi]}")" \
             --arg parse_x86 "$(jq -R -s '.' <<<"${PARSE_SHA[x86_64-unknown-linux-musl]}")" \
             --arg parse_arm "$(jq -R -s '.' <<<"${PARSE_SHA[armv6-unknown-linux-gnueabihf]}")" \
             --arg parse_aarch64 "$(jq -R -s '.' <<<"${PARSE_SHA[aarch64-unknown-linux-musl]}")" \
+            --arg parse_android_a64 "$(jq -R -s '.' <<<"${PARSE_SHA[aarch64-linux-android]}")" \
+            --arg parse_android_v7 "$(jq -R -s '.' <<<"${PARSE_SHA[armv7-linux-androideabi]}")" \
             --arg deploy_x86 "$(jq -R -s '.' <<<"${DEPLOY_SHA[x86_64-unknown-linux-musl]}")" \
             --arg deploy_arm "$(jq -R -s '.' <<<"${DEPLOY_SHA[armv6-unknown-linux-gnueabihf]}")" \
             --arg deploy_aarch64 "$(jq -R -s '.' <<<"${DEPLOY_SHA[aarch64-unknown-linux-musl]}")" \
+            --arg deploy_android_a64 "$(jq -R -s '.' <<<"${DEPLOY_SHA[aarch64-linux-android]}")" \
+            --arg deploy_android_v7 "$(jq -R -s '.' <<<"${DEPLOY_SHA[armv7-linux-androideabi]}")" \
             '{
               registry_version: 1,
               updated: $ts,
@@ -153,6 +183,14 @@ jobs:
                   "aarch64-unknown-linux-musl": {
                     url: ($base + "/octx-aarch64-unknown-linux-musl.gz"),
                     sha256: $head_aarch64
+                  },
+                  "aarch64-linux-android": {
+                    url: ($base + "/octx-aarch64-linux-android.gz"),
+                    sha256: $head_android_a64
+                  },
+                  "armv7-linux-androideabi": {
+                    url: ($base + "/octx-armv7-linux-androideabi.gz"),
+                    sha256: $head_android_v7
                   }
                 }
               },
@@ -175,6 +213,14 @@ jobs:
                         "aarch64-unknown-linux-musl": {
                           url: ($base + "/fmt-aarch64-unknown-linux-musl.gz"),
                           sha256: $fmt_aarch64
+                        },
+                        "aarch64-linux-android": {
+                          url: ($base + "/fmt-aarch64-linux-android.gz"),
+                          sha256: $fmt_android_a64
+                        },
+                        "armv7-linux-androideabi": {
+                          url: ($base + "/fmt-armv7-linux-androideabi.gz"),
+                          sha256: $fmt_android_v7
                         }
                       }
                     }
@@ -198,6 +244,14 @@ jobs:
                         "aarch64-unknown-linux-musl": {
                           url: ($base + "/parse-aarch64-unknown-linux-musl.gz"),
                           sha256: $parse_aarch64
+                        },
+                        "aarch64-linux-android": {
+                          url: ($base + "/parse-aarch64-linux-android.gz"),
+                          sha256: $parse_android_a64
+                        },
+                        "armv7-linux-androideabi": {
+                          url: ($base + "/parse-armv7-linux-androideabi.gz"),
+                          sha256: $parse_android_v7
                         }
                       }
                     }
@@ -221,6 +275,14 @@ jobs:
                         "aarch64-unknown-linux-musl": {
                           url: ($base + "/deploy-aarch64-unknown-linux-musl.gz"),
                           sha256: $deploy_aarch64
+                        },
+                        "aarch64-linux-android": {
+                          url: ($base + "/deploy-aarch64-linux-android.gz"),
+                          sha256: $deploy_android_a64
+                        },
+                        "armv7-linux-androideabi": {
+                          url: ($base + "/deploy-armv7-linux-androideabi.gz"),
+                          sha256: $deploy_android_v7
                         }
                       }
                     }
@@ -240,6 +302,10 @@ jobs:
             artifacts/artifacts-armv6-unknown-linux-gnueabihf/*.sha256
             artifacts/artifacts-aarch64-unknown-linux-musl/*.gz
             artifacts/artifacts-aarch64-unknown-linux-musl/*.sha256
+            artifacts/artifacts-aarch64-linux-android/*.gz
+            artifacts/artifacts-aarch64-linux-android/*.sha256
+            artifacts/artifacts-armv7-linux-androideabi/*.gz
+            artifacts/artifacts-armv7-linux-androideabi/*.sha256
             registry-index.json
           body: |
             ## octx ${{ github.ref_name }}

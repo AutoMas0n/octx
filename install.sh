@@ -29,13 +29,26 @@ prompt_yn() {
 
 # ── detect target triple ─────────────────────────────────────────────────────
 detect_target() {
-    local arch os
+    local arch os kernel
     os="$(uname -s | tr '[:upper:]' '[:lower:]')"
     arch="$(uname -m)"
+    kernel="$(uname -o | tr '[:upper:]' '[:lower:]')"
 
-    # Only Linux is supported for now
+    # Detect Android (Termux or similar Linux-on-Android environments)
+    if [ "$kernel" = "android" ]; then
+        case "$arch" in
+            aarch64|arm64) echo "aarch64-linux-android" ;;
+            armv7l)        echo "armv7-linux-androideabi" ;;
+            *)
+                die "unsupported Android architecture: $arch — run 'uname -m' and open an issue"
+                ;;
+        esac
+        return
+    fi
+
+    # Standard Linux (musl/glibc)
     if [ "$os" != "linux" ]; then
-        die "unsupported OS: $os — only Linux is supported. Run 'uname -m' and open an issue."
+        die "unsupported OS: $os — only Linux and Android are supported. Run 'uname -m' and open an issue."
     fi
 
     case "$arch" in
