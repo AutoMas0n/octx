@@ -182,6 +182,9 @@ main() {
 
     download_and_install "$target" "$prefix"
 
+    # Reset EXIT trap from download_and_install to avoid unbound variable on cleanup
+    trap - EXIT
+
     run_octx_init "$prefix"
 
     add_github_token "$prefix"
