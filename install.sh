@@ -111,7 +111,7 @@ download_and_install() {
     local bin_file="${tmp_dir}/${OCTX_BINARY}"
 
     # Cleanup on exit
-    trap 'rm -rf "$tmp_dir"' EXIT
+    trap 'rm -rf "${tmp_dir:-}"' EXIT
 
     info "Downloading octx for ${target}..."
     if ! curl -fsSL "$url" -o "$gz_file"; then
@@ -181,9 +181,6 @@ main() {
     handle_existing "$prefix"
 
     download_and_install "$target" "$prefix"
-
-    # Reset EXIT trap from download_and_install to avoid unbound variable on cleanup
-    trap - EXIT
 
     run_octx_init "$prefix"
 
