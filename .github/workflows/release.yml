@@ -39,7 +39,6 @@ jobs:
       matrix:
         target:
           - x86_64-unknown-linux-musl
-          - aarch64-unknown-linux-musl
           - aarch64-linux-android
           - armv7-linux-androideabi
     runs-on: ubuntu-latest
@@ -56,15 +55,6 @@ jobs:
               sudo apt-get install -y musl-tools
               echo 'CC_x86_64_unknown_linux_musl=musl-gcc' >> "$GITHUB_ENV"
               echo 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc' >> "$GITHUB_ENV"
-              ;;
-            aarch64-unknown-linux-musl)
-              # zig wrapper: a single executable, no args in env var
-              curl -fsSL https://ziglang.org/download/0.14.0/zig-linux-x86_64-0.14.0.tar.xz | sudo tar xJ -C /opt
-              sudo mkdir -p /opt/zig-wrapper
-              printf '#!/bin/sh\nexec /opt/zig-linux-x86_64-0.14.0/zig cc -target aarch64-linux-musl "$@"\n' | sudo tee /opt/zig-wrapper/aarch64-linux-musl-cc > /dev/null
-              sudo chmod +x /opt/zig-wrapper/aarch64-linux-musl-cc
-              echo "/opt/zig-wrapper" >> "$GITHUB_PATH"
-              echo 'CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-musl-cc' >> "$GITHUB_ENV"
               ;;
             aarch64-linux-android)
               curl -fsSL https://dl.google.com/android/repository/android-ndk-r27c-linux.zip -o ndk.zip
@@ -131,7 +121,7 @@ jobs:
           declare -A PARSE_SHA
           declare -A DEPLOY_SHA
 
-          for target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl aarch64-linux-android armv7-linux-androideabi; do
+          for target in x86_64-unknown-linux-musl aarch64-linux-android armv7-linux-androideabi; do
             HEAD_SHA[$target]=$(cat "artifacts/artifacts-$target/octx-$target.gz.sha256")
             FMT_SHA[$target]=$(cat "artifacts/artifacts-$target/fmt-$target.gz.sha256")
             PARSE_SHA[$target]=$(cat "artifacts/artifacts-$target/parse-$target.gz.sha256")
@@ -145,19 +135,15 @@ jobs:
             --arg ts "$TIMESTAMP" \
             --arg base "$BASE_URL" \
             --arg head_x86 "$(jq -R -s '.' <<<"${HEAD_SHA[x86_64-unknown-linux-musl]}")" \
-            --arg head_aarch64 "$(jq -R -s '.' <<<"${HEAD_SHA[aarch64-unknown-linux-musl]}")" \
             --arg head_android_a64 "$(jq -R -s '.' <<<"${HEAD_SHA[aarch64-linux-android]}")" \
             --arg head_android_v7 "$(jq -R -s '.' <<<"${HEAD_SHA[armv7-linux-androideabi]}")" \
             --arg fmt_x86 "$(jq -R -s '.' <<<"${FMT_SHA[x86_64-unknown-linux-musl]}")" \
-            --arg fmt_aarch64 "$(jq -R -s '.' <<<"${FMT_SHA[aarch64-unknown-linux-musl]}")" \
             --arg fmt_android_a64 "$(jq -R -s '.' <<<"${FMT_SHA[aarch64-linux-android]}")" \
             --arg fmt_android_v7 "$(jq -R -s '.' <<<"${FMT_SHA[armv7-linux-androideabi]}")" \
             --arg parse_x86 "$(jq -R -s '.' <<<"${PARSE_SHA[x86_64-unknown-linux-musl]}")" \
-            --arg parse_aarch64 "$(jq -R -s '.' <<<"${PARSE_SHA[aarch64-unknown-linux-musl]}")" \
             --arg parse_android_a64 "$(jq -R -s '.' <<<"${PARSE_SHA[aarch64-linux-android]}")" \
             --arg parse_android_v7 "$(jq -R -s '.' <<<"${PARSE_SHA[armv7-linux-androideabi]}")" \
             --arg deploy_x86 "$(jq -R -s '.' <<<"${DEPLOY_SHA[x86_64-unknown-linux-musl]}")" \
-            --arg deploy_aarch64 "$(jq -R -s '.' <<<"${DEPLOY_SHA[aarch64-unknown-linux-musl]}")" \
             --arg deploy_android_a64 "$(jq -R -s '.' <<<"${DEPLOY_SHA[aarch64-linux-android]}")" \
             --arg deploy_android_v7 "$(jq -R -s '.' <<<"${DEPLOY_SHA[armv7-linux-androideabi]}")" \
             '{
@@ -170,9 +156,6 @@ jobs:
                   "x86_64-unknown-linux-musl": {
                     url: ($base + "/octx-x86_64-unknown-linux-musl.gz"),
                     sha256: $head_x86
-                  "aarch64-unknown-linux-musl": {
-                    url: ($base + "/octx-aarch64-unknown-linux-musl.gz"),
-                    sha256: $head_aarch64
                   },
                   "aarch64-linux-android": {
                     url: ($base + "/octx-aarch64-linux-android.gz"),
@@ -195,9 +178,6 @@ jobs:
                         "x86_64-unknown-linux-musl": {
                           url: ($base + "/fmt-x86_64-unknown-linux-musl.gz"),
                           sha256: $fmt_x86
-                        "aarch64-unknown-linux-musl": {
-                          url: ($base + "/fmt-aarch64-unknown-linux-musl.gz"),
-                          sha256: $fmt_aarch64
                         },
                         "aarch64-linux-android": {
                           url: ($base + "/fmt-aarch64-linux-android.gz"),
@@ -221,9 +201,6 @@ jobs:
                         "x86_64-unknown-linux-musl": {
                           url: ($base + "/parse-x86_64-unknown-linux-musl.gz"),
                           sha256: $parse_x86
-                        "aarch64-unknown-linux-musl": {
-                          url: ($base + "/parse-aarch64-unknown-linux-musl.gz"),
-                          sha256: $parse_aarch64
                         },
                         "aarch64-linux-android": {
                           url: ($base + "/parse-aarch64-linux-android.gz"),
@@ -247,9 +224,6 @@ jobs:
                         "x86_64-unknown-linux-musl": {
                           url: ($base + "/deploy-x86_64-unknown-linux-musl.gz"),
                           sha256: $deploy_x86
-                        "aarch64-unknown-linux-musl": {
-                          url: ($base + "/deploy-aarch64-unknown-linux-musl.gz"),
-                          sha256: $deploy_aarch64
                         },
                         "aarch64-linux-android": {
                           url: ($base + "/deploy-aarch64-linux-android.gz"),
@@ -273,8 +247,6 @@ jobs:
           files: |
             artifacts/artifacts-x86_64-unknown-linux-musl/*.gz
             artifacts/artifacts-x86_64-unknown-linux-musl/*.sha256
-            artifacts/artifacts-aarch64-unknown-linux-musl/*.gz
-            artifacts/artifacts-aarch64-unknown-linux-musl/*.sha256
             artifacts/artifacts-aarch64-linux-android/*.gz
             artifacts/artifacts-aarch64-linux-android/*.sha256
             artifacts/artifacts-armv7-linux-androideabi/*.gz
