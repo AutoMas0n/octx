@@ -17,8 +17,16 @@ info() {
     echo "==> $*"
 }
 
+# Skip interactive prompts when stdin is not a terminal (e.g. curl | bash)
+interactive() {
+    [ -t 0 ]
+}
+
 prompt_yn() {
     # $1: prompt text; returns 0 for yes, 1 for no
+    if ! interactive; then
+        return 0  # non-interactive: assume yes
+    fi
     local reply
     read -r -p "$1 (Y/n) " reply
     case "${reply,,}" in
@@ -100,8 +108,8 @@ handle_existing() {
     fi
 }
 
-# ── download & install ───────────────────────────────────────────────────────
-download_and_install() {
+# ── download & install (subshell: EXIT trap stays local) ───────────────────
+download_and_install() (
     local target="$1"
     local prefix="$2"
     local url="${OCTX_REPO}/releases/latest/download/${OCTX_BINARY}-${target}.gz"
@@ -110,8 +118,8 @@ download_and_install() {
     local gz_file="${tmp_dir}/${OCTX_BINARY}.gz"
     local bin_file="${tmp_dir}/${OCTX_BINARY}"
 
-    # Cleanup on exit
-    trap 'rm -rf "${tmp_dir:-}"' EXIT
+    # Cleanup on exit — only applies to this subshell
+    trap 'rm -rf "$tmp_dir"' EXIT
 
     info "Downloading octx for ${target}..."
     if ! curl -fsSL "$url" -o "$gz_file"; then
@@ -139,7 +147,7 @@ download_and_install() {
 
     info "Installing to ${prefix}/${OCTX_BINARY}..."
     mv "$bin_file" "${prefix}/${OCTX_BINARY}" || die "installation failed"
-}
+)
 
 # ── run octx init ────────────────────────────────────────────────────────────
 run_octx_init() {
@@ -156,6 +164,9 @@ run_octx_init() {
 add_github_token() {
     local prefix="$1"
     local octx_cmd="${prefix}/${OCTX_BINARY}"
+
+    # Skip token prompt when stdin is not a terminal (e.g. curl | bash)
+    interactive || return 0
 
     if prompt_yn "Add a GitHub token?"; then
         local token
