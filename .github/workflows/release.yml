@@ -231,7 +231,7 @@ jobs:
 
           echo "Generated registry-index.json:"
           cat registry-index.json
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: |
             artifacts/artifacts-x86_64-unknown-linux-musl/*.gz
