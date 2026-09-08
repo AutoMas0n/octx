@@ -1,0 +1,89 @@
+## Purpose
+
+Resolves a harness name to a YAML definition file, merges its defaults with CLI overrides, and dispatches to the agent arm with the computed arguments — so users can run complex agent workflows with a single `octx x harness <name>` command.
+
+## ADDED Requirements
+
+### Requirement: Resolve a harness name to a definition file
+The harness arm SHALL resolve a harness name to a `harness.yaml` file by checking the following locations in order, using the first match:
+1. `--local-dir <path>` flag — overrides all other resolution, uses exactly the given path
+2. `{data_dir}/octx/storage/harnesses/<name>/harness.yaml` — synced from the repo release
+
+If no matching file is found, the harness arm SHALL exit non-zero with a message explaining that the harness was not found and suggesting the user run `octx sync` (or `--local-dir` for development).
+
+#### Scenario: Resolve from local dir
+- **WHEN** the user runs `octx x harness develop-arm --local-dir ./my-harness/`
+- **THEN** the harness arm reads `./my-harness/harness.yaml`
+
+#### Scenario: Resolve from storage
+- **WHEN** the user runs `octx x harness develop-arm` and `{data_dir}/octx/storage/harnesses/develop-arm/harness.yaml` exists
+- **THEN** the harness arm reads that file
+
+#### Scenario: Harness not found
+- **WHEN** the user runs `octx x harness nonexistent` and no matching file is found
+- **THEN** the harness arm exits non-zero with a message suggesting `octx sync` or `--local-dir`
+
+### Requirement: Parse harness YAML schema
+The harness arm SHALL parse a `harness.yaml` file with the following schema:
+
+```yaml
+schema: 1
+name: <string>                    # Harness name, must match directory name
+description: <string>             # Human-readable description
+agent: <string>                   # Default agent ID (pi, claude, etc.)
+defaults:
+  model: <string>                 # Default model (optional)
+  provider: <string>              # Default provider (optional, pi-specific)
+  skills: <list of strings>       # Default skills (optional, pi-specific)
+  system_prompt: <string>         # Default system prompt (optional)
+  permission_mode: <string>       # approve-all | approve-reads | deny-all
+  cwd: <string>                   # Working directory
+  timeout: <number>               # Per-turn timeout in seconds
+  max_turns: <number>             # Max prompt turns
+  format: <string>                # text | json | ndjson | quiet
+script:
+  path: <string>                  # Script path, relative to harness.yaml dir
+  args: <list of strings>         # Default script arguments
+  env: <map of string to string>  # Default environment variables
+agent_config:                     # Agent-specific passthrough
+  pi:                             # Pi-specific config overrides
+    thinking: <string>            # off | minimal | low | medium | high | xhigh
+```
+
+Unrecognized fields SHALL be ignored (forward-compatible). Missing required fields (`name`, `agent`, `script.path`) SHALL cause a parse error with a message identifying the missing field.
+
+#### Scenario: Valid YAML parses correctly
+- **WHEN** the harness YAML is valid and contains all required fields
+- **THEN** the harness arm loads the defaults and is ready to merge CLI overrides
+
+#### Scenario: Missing required field
+- **WHEN** the harness YAML is missing the `agent` field
+- **THEN** the harness arm exits non-zero with a parse error identifying the missing field
+
+### Requirement: Merge defaults with CLI overrides
+The harness arm SHALL accept CLI arguments that override any field in the YAML defaults. CLI overrides SHALL take precedence. The harness arm SHALL compute the full argument list for the agent arm and then invoke it.
+
+#### Scenario: CLI overrides model
+- **WHEN** the harness YAML specifies `defaults.model: claude-sonnet-4` and the user runs `--model gpt-4o`
+- **THEN** the agent arm receives `--model gpt-4o`
+
+### Requirement: Dispatch to the agent arm
+The harness arm SHALL invoke the agent arm by running `octx x agent <computed-args>` (JIT install if needed). The harness arm SHALL append `--script <path-to-harness-script>` and `--script-args <...>` (from CLI or YAML args) to the computed arguments. Any remaining CLI arguments after `--` SHALL be appended to the script's argument list.
+
+#### Scenario: Dispatch with computed args
+- **WHEN** the harness is resolved and defaults are merged with overrides
+- **THEN** the harness arm runs `octx x agent --agent pi --model <resolved> --script <harness-dir>/script.py -- <script-args>`
+
+### Requirement: Script path resolution
+The `script.path` in the harness YAML SHALL be resolved relative to the directory containing the `harness.yaml` file. The resolved absolute path SHALL be passed to the agent arm via `--script <path>`.
+
+#### Scenario: Relative script path
+- **WHEN** the harness YAML at `{storage}/harnesses/develop-arm/harness.yaml` specifies `script.path: script.py`
+- **THEN** the agent arm receives `--script {storage}/harnesses/develop-arm/script.py`
+
+### Requirement: Help text
+The harness arm SHALL produce a `--help` output listing the resolved harness's description, defaults, and available CLI flags. If no harness name is provided, the harness arm SHALL list all available harnesses (from the storage directory and any `--local-dir`).
+
+#### Scenario: List harnesses
+- **WHEN** the user runs `octx x harness` without a name
+- **THEN** the harness arm lists all available harnesses from the storage directory
