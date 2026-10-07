@@ -12,7 +12,7 @@ The existing head dispatches arms via `octx x <name>` which JIT-installs and run
 - Script orchestration via Unix socket with NDJSON — works from any language
 - Tool execution plane: bash, python, filesystem — all via ACP terminal and fs methods
 - Permission modes, turn limits, timeouts — safety guards for headless operation
-- Harness resolution: `--local-dir` for dev, `{data_dir}/octx/storage/` for released harnesses
+- Harness resolution: `--local-dir` for dev, `{config_dir}/harnesses/` for user-authored copies, `{data_dir}/octx/storage/` (read-only mirror) for released harnesses
 
 **Non-Goals:**
 - ACP agent server (only client-side — the agent arm does not serve ACP to other clients)

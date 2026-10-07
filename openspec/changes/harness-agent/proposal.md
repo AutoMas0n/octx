@@ -15,12 +15,12 @@ The octx head can install and run single-purpose arms (fmt, parse, deploy), but 
 
 - **New `arms/harness/` workspace member** — the harness arm. A Rust binary that:
   - Resolves a harness name to a YAML definition file
-  - Resolution order: `--local-dir <path>` → `{data_dir}/octx/storage/harnesses/<name>/harness.yaml`
+  - Resolution order: `--local-dir <path>` → `{config_dir}/harnesses/<name>/` (user-authored, editable) → `{data_dir}/octx/storage/harnesses/<name>/` (read-only released mirror)
   - Parses the YAML, merges defaults with CLI overrides
   - Dispatches to `octx x agent <params>` with the computed arguments
   - Ships with `skill.md` so Pi can discover it
 
-- **New `arms/harness/harnesses/` directory** — committed harness definitions
+- **New `storage/harnesses/` directory** — committed harness definitions (content, separate from the arm binary)
   - `develop-arm/` — the first harness: runs an ACP agent (pi by default) with a script that orchestrates a develop loop
   - Each harness is a directory with `harness.yaml` (defaults) and one or more scripts (Python, bash, etc.)
 
@@ -30,10 +30,10 @@ The octx head can install and run single-purpose arms (fmt, parse, deploy), but 
 
 ### New Capabilities
 - `agent-arm`: ACP client arm that launches agents, manages sessions, exposes a Unix socket for script orchestration, and provides a tool execution plane (bash, python, filesystem). Agent-agnostic at the protocol level, with Pi-specific customizations layered on top.
-- `harness-arm`: YAML-resolving arm that maps a harness name to a definition file, merges defaults with CLI overrides, and dispatches to the agent arm. Resolution contract: `--local-dir` or `{data_dir}/octx/storage/harnesses/<name>/`.
+- `harness-arm`: YAML-resolving arm that maps a harness name to a definition file, merges defaults with CLI overrides, and dispatches to the agent arm. Resolution contract: `--local-dir`, `{config_dir}/harnesses/<name>/` (user-authored), or `{data_dir}/octx/storage/harnesses/<name>/` (read-only mirror).
 
 ### Modified Capabilities
-- `storage-sync` (from the separate storage-sync change): The `{data_dir}/octx/storage/harnesses/` directory is the first consumer of the storage sync mechanism. The storage layout requirement is documented in the storage-sync spec; the harness arm specifies the resolution contract.
+- `storage-sync` (from the separate storage-sync change): The `{data_dir}/octx/storage/harnesses/` directory is the first consumer of the storage sync mechanism, published as a read-only canonical mirror. The storage layout and mirror semantics are documented in the storage-sync spec; the harness arm specifies the three-layer resolution contract.
 
 ## Impact
 
@@ -42,8 +42,8 @@ The octx head can install and run single-purpose arms (fmt, parse, deploy), but 
 - **`arms/agent/skill.md`** — AI skill file for the agent arm
 - **`arms/harness/Cargo.toml`** — new workspace member, depends on clap, anyhow, serde, serde_yaml
 - **`arms/harness/src/main.rs`** — YAML parser, harness resolution, argument construction, dispatch
-- **`arms/harness/harnesses/develop-arm/harness.yaml`** — first harness definition
-- **`arms/harness/harnesses/develop-arm/script.py`** — first harness script
+- **`storage/harnesses/develop-arm/harness.yaml`** — first harness definition
+- **`storage/harnesses/develop-arm/script.py`** — first harness script
 - **`Cargo.toml`** — workspace members extended to include `arms/agent` and `arms/harness`
 - **`registry-index.json`** — new entries for `agent` and `harness` arms
 - No changes to the head binary — both are arms

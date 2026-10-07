@@ -16,10 +16,14 @@ No new external dependencies are needed — the head already has tokio, reqwest,
 **Non-Goals:**
 - Selective sync of individual subpaths (sync everything or nothing — YAGNI)
 - Storage version pinning (always latest, like arms)
-- User-local storage overrides (a future `--local-dir` flag on the harness arm covers this use case)
+- Preserving local modifications or merging edits in the storage mirror (it is canonical and read-only)
+- Relocating the storage mirror itself (user-authored content lives outside the mirror — e.g. `{config_dir}/harnesses/`, or a `--local-dir` on the harness arm)
 - Sync from non-GitHub sources (v1 uses the same registry source as arms)
 
 ## Decisions
+
+### Decision: Storage is a canonical read-only mirror, not a user workspace
+`{data_dir}/octx/storage/` is octx-owned and replaced wholesale. Sync does not merge, back up, or detect local modifications — anything absent from the archive is dropped. This follows the project's separation principle: an arm is the execution contract, while harnesses are independently-authored content, so user-authored copies live under `{config_dir}/harnesses/` or a `--local-dir`, never in the mirror. Alternatives: preserving/merging local edits (rejected — that is a full package manager, out of scope for this change), or a read-only mount (overkill). Version tracking stays simple: a manifest-recorded version/etag, the mirror reflecting only the current release, no per-file history or pinning.
 
 ### Decision: Storage is a registry entry, not a separate index
 The `storage` entry lives in `registry-index.json` alongside `head` and `arms`, using the same version/etag/downloads/sha256 structure. This reuses the existing fetch-with-cache machinery and avoids a second HTTP request to a different URL.
@@ -43,8 +47,8 @@ The same file lock at `{data_dir}/octx/update.lock` serializes both `octx sync` 
 ### Decision: Storage sync failure is reported, not fatal to update
 If the storage sync fails during `octx update`, the error is printed to stderr but the update continues to its later phases (self-update). This follows the principle that a stale storage directory is better than no update at all.
 
-### Decision: Release pipeline builds `storage.tar.gz` from `storage/` dir
-A step in `.github/workflows/release.yml` runs `tar -czf storage.tar.gz storage/` from the repo root and attaches it to the release. The `registry-index.json` is updated with the archive URL, checksum, and version (same as the head version).
+### Decision: Release pipeline builds `storage.tar.gz` from `storage/` dir contents
+A step in `.github/workflows/release.yml` runs `tar -czf storage.tar.gz -C storage .` from the repo root (note `-C storage .` archives the **contents**, so top-level entries like `harnesses/` land at the archive root) and attaches it to the release. This matches the extraction target `{data_dir}/octx/storage/` — without `-C storage .`, extraction would double-nest into `{data_dir}/octx/storage/storage/`. The `registry-index.json` is updated with the archive URL, checksum, and version (same as the head version).
 
 ## Risks / Trade-offs
 

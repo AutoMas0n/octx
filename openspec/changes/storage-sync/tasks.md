@@ -23,7 +23,7 @@
 
 ## 5. Release Pipeline
 
-- [ ] 5.1 Add a step to `.github/workflows/release.yml` that runs `tar -czf storage.tar.gz storage/` from the repo root and attaches it to the release, and verify the archive is present in the release assets
+- [ ] 5.1 Add a step to `.github/workflows/release.yml` that runs `tar -czf storage.tar.gz -C storage .` from the repo root (contents only, no nested `storage/` dir) and attaches it to the release, and verify the archive is present in the release assets and extracts to top-level entries like `harnesses/`
 - [ ] 5.2 Update `registry-index.json` in the repo with a `storage` entry pointing to the archive URL and SHA256, and verify the format is parseable by the existing `RegistryIndex::fetch` method
 
 ## 6. Verification
@@ -31,4 +31,5 @@
 - [ ] 6.1 End-to-end: run `octx sync` with a local registry, verify the storage directory is created with the expected tree, then run it again and verify it's a no-op (ETag cache hit)
 - [ ] 6.2 Run `octx update` and verify storage sync runs as part of the update flow
 - [ ] 6.3 Run `octx sync --force` and verify a fresh download and extraction occurs
-- [ ] 6.4 Run `cargo test` and `cargo clippy -- -D warnings` to confirm no regressions
+- [ ] 6.4 Verify mirror semantics: edit a file under `{data_dir}/octx/storage/`, run `octx sync`, and confirm the local edit is dropped with no backup, and that a harness removed upstream is gone locally
+- [ ] 6.5 Run `cargo test` and `cargo clippy -- -D warnings` to confirm no regressions

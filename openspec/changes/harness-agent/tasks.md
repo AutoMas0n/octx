@@ -41,7 +41,7 @@
 ## 7. Harness Arm
 
 - [ ] 7.1 Create `arms/harness/Cargo.toml` as a workspace member with `[[bin]] name = "harness"`, deps: clap, anyhow, serde, serde_yaml, and the standard release profile, and verify `cargo check` succeeds
-- [ ] 7.2 Implement harness name resolution: `--local-dir <path>` override, then `{data_dir}/octx/storage/harnesses/<name>/harness.yaml`, with a clear "not found — run octx sync or use --local-dir" error, and verify all three cases resolve correctly
+- [ ] 7.2 Implement harness name resolution with three layers: `--local-dir <path>` override, then `{config_dir}/harnesses/<name>/harness.yaml` (user-authored), then `{data_dir}/octx/storage/harnesses/<name>/harness.yaml` (read-only mirror), with a clear "not found — run octx sync, use --local-dir, or place a copy in {config_dir}/harnesses" error, and verify all layers resolve and that a user copy shadows the mirror
 - [ ] 7.3 Implement the harness YAML schema parser (schema, name, description, agent, defaults, script, agent_config) with meaningful errors for missing required fields, and verify valid and invalid YAML cases
 - [ ] 7.4 Implement defaults-merge: CLI overrides take precedence over YAML defaults, compute the full agent arm arg list, and verify `--model` override wins over YAML default
 - [ ] 7.5 Implement dispatch: invoke `octx x agent <computed-args> --script <resolved-abs-path> -- <script-args>`, and verify a harness run invokes the agent arm with the expected argv
@@ -49,8 +49,8 @@
 
 ## 8. Develop-Arm Harness Content
 
-- [ ] 8.1 Create `arms/harness/harnesses/develop-arm/harness.yaml` with schema: 1, name, description, agent: pi, sensible defaults (model, permission_mode: approve-reads, timeout, max_turns, format: ndjson, cwd: ./), script path, and verify it parses with the harness arm
-- [ ] 8.2 Create `arms/harness/harnesses/develop-arm/script.py` — a Python script that connects to `HARNESS_SOCKET`, sends a prompt, streams events, supports `-- <script-args>` passthrough, and exits non-zero on agent error, and verify it runs against a local agent arm
+- [ ] 8.1 Create `storage/harnesses/develop-arm/harness.yaml` with schema: 1, name, description, agent: pi, sensible defaults (model, permission_mode: approve-reads, timeout, max_turns, format: ndjson, cwd: ./), script path, and verify it parses with the harness arm
+- [ ] 8.2 Create `storage/harnesses/develop-arm/script.py` — a Python script that connects to `HARNESS_SOCKET`, sends a prompt, streams events, supports `-- <script-args>` passthrough, and exits non-zero on agent error, and verify it runs against a local agent arm
 - [ ] 8.3 Create `arms/harness/skill.md` and `arms/agent/skill.md` documenting usage for AI agents (description, usage, examples, env vars), and verify both render as valid skill frontmatter
 - [ ] 8.4 Verify end-to-end: `octx x harness develop-arm -- --some-arg` runs the agent arm with the harness script and returns the script's exit code
 

@@ -8,6 +8,7 @@ The octx head knows how to install compiled arm binaries from the registry, but 
 - **`registry-index.json` gains a `storage` entry** — version, URL, SHA256, and ETag for the storage archive
 - **`octx update` runs sync as its final phase** — keeps storage assets current alongside arms and skills
 - **`octx sync --force` flag** — re-download even if the ETag matches
+- **Storage is a canonical read-only mirror** — `{data_dir}/octx/storage/` is octx-owned and replaced wholesale on sync; local edits are silently dropped, and user-authored copies live outside it (harnesses under `{config_dir}/harnesses/`)
 - **Storage directory layout** — `{data_dir}/octx/storage/` mirrors the monorepo's `storage/` directory tree
 - **Release pipeline builds `storage.tar.gz`** — archived from the `storage/` directory in the repo root
 
@@ -28,6 +29,6 @@ The octx head knows how to install compiled arm binaries from the registry, but 
 - **`src/install.rs`** — Reuses `fetch_binary` / `fetch_with_cache` machinery for the storage tarball
 - **`src/manifest.rs`** — InstalledManifest optionally tracks last storage sync version/etag
 - **New module `src/sync.rs`** — Sync orchestration: download, verify, extract, manifest tracking
-- **`.github/workflows/release.yml`** — New step: `tar -czf storage.tar.gz storage/` and attach to release
+- **`.github/workflows/release.yml`** — New step: `tar -czf storage.tar.gz -C storage .` and attach to release
 - **`registry-index.json`** — New `storage` entry alongside `head` and `arms`
 - No new external dependencies — reuses tokio, reqwest, sha2, serde that are already in Cargo.toml

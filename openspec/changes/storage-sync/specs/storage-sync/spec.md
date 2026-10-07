@@ -5,7 +5,7 @@ Lets the octx head keep non-binary assets (harness YAML, scripts, templates) on 
 ## ADDED Requirements
 
 ### Requirement: Storage assets are distributed as a release archive
-The release pipeline SHALL produce a `storage.tar.gz` archive containing the `storage/` directory tree from the monorepo, and the archive SHALL be attached to the GitHub release alongside the head binary and arm binaries. The registry index SHALL contain a `storage` entry with the archive version, download URL, and SHA256 checksum.
+The release pipeline SHALL produce a `storage.tar.gz` archive containing the **contents** of the monorepo's `storage/` directory (top-level entries such as `harnesses/`, not a nested `storage/` directory), and the archive SHALL be attached to the GitHub release alongside the head binary and arm binaries. The registry index SHALL contain a `storage` entry with the archive version, download URL, and SHA256 checksum.
 
 #### Scenario: Registry index advertises storage
 - **WHEN** the user runs `octx sync` with a registry index that contains a `storage` entry
@@ -58,6 +58,21 @@ The release pipeline SHALL produce a `storage.tar.gz` archive containing the `st
 #### Scenario: Harness directory present after sync
 - **WHEN** a sync completes and the repo's `storage/` contains `harnesses/develop-arm/`
 - **THEN** `{data_dir}/octx/storage/harnesses/develop-arm/` exists with the same files
+
+### Requirement: Storage is a canonical read-only mirror
+`{data_dir}/octx/storage/` SHALL be an octx-owned canonical mirror of the repo's `storage/` tree and SHALL be treated as read-only. Sync SHALL replace the directory contents wholesale rather than merging with or preserving local modifications: content present locally but absent from the archive SHALL be removed, and modified files SHALL be overwritten. The mirror SHALL reflect only the release that is current at sync time — no version history, pinning, or rollback is retained. User-authored content belongs outside this directory (for harnesses, under `{config_dir}/harnesses/`).
+
+#### Scenario: Local edit is dropped on next sync
+- **WHEN** a user edits or adds a file under `{data_dir}/octx/storage/` and then runs `octx sync`
+- **THEN** the edit is overwritten or removed by the freshly extracted archive, with no backup and no warning
+
+#### Scenario: Stale content removed
+- **WHEN** an asset that existed in a previous release is no longer present in the current release archive
+- **THEN** it no longer exists under `{data_dir}/octx/storage/` after sync
+
+#### Scenario: Mirror reflects only the current release
+- **WHEN** a sync completes against release N after previously syncing release N-1
+- **THEN** `{data_dir}/octx/storage/` contains only the release N tree — no N-1 content is retained
 
 ### Requirement: Concurrent sync safety
 Concurrent `octx sync` invocations SHALL be serialized by a file lock so two processes cannot corrupt the storage directory simultaneously.
