@@ -52,9 +52,29 @@ impl Drop for FileLock {
     }
 }
 
+/// Decompress gzip data if `data` starts with the gzip magic bytes.
+///
+/// Every binary octx distributes is gzipped (`{name}-{target}.gz`), but the
+/// checksum in the registry is computed over the *compressed* archive — so
+/// decompression has to happen after verification, not inside `fetch`.
+/// Anything without the gzip magic is passed through untouched.
+fn maybe_gunzip(data: Vec<u8>) -> Result<Vec<u8>, OctxError> {
+    use std::io::Read;
+
+    if !data.starts_with(&[0x1f, 0x8b]) {
+        return Ok(data);
+    }
+
+    let mut out = Vec::new();
+    flate2::read::GzDecoder::new(data.as_slice())
+        .read_to_end(&mut out)
+        .map_err(OctxError::Io)?;
+    Ok(out)
+}
+
 /// Atomically install a binary: write to temp, set permissions, rename into place.
 ///
-/// source: where the downloaded bytes are
+/// source: where the downloaded bytes are (gzip or raw)
 /// dest:   final path in {data_dir}/octx/bin/<name>
 pub fn install_binary(source: &Path, dest: &Path) -> Result<(), OctxError> {
     // Create parent directories for dest
@@ -62,8 +82,8 @@ pub fn install_binary(source: &Path, dest: &Path) -> Result<(), OctxError> {
         fs::create_dir_all(parent)?;
     }
 
-    // Read source bytes
-    let data = fs::read(source)?;
+    // Read source bytes and decompress if gzipped
+    let data = maybe_gunzip(fs::read(source)?)?;
 
     // Write to temp file
     let tmp = dest.with_extension("tmp");
@@ -201,6 +221,57 @@ mod tests {
         handle.join().expect("thread should finish");
 
         // Cleanup
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_install_binary_decompresses_gzip() {
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+        use std::io::Write;
+
+        let dir = std::env::temp_dir().join("octx-test-install-gzip");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let source = dir.join("tool-x86_64.gz");
+        let dest = dir.join("tool");
+        let contents = b"#!/bin/sh\necho hi\n";
+
+        let mut enc = GzEncoder::new(Vec::new(), Compression::default());
+        enc.write_all(contents).unwrap();
+        fs::write(&source, enc.finish().unwrap()).unwrap();
+
+        install_binary(&source, &dest).expect("install should succeed");
+
+        assert_eq!(
+            fs::read(&dest).unwrap(),
+            contents,
+            "gzip source should be decompressed on install"
+        );
+
+        #[cfg(unix)]
+        assert!(
+            fs::metadata(&dest).unwrap().permissions().mode() & 0o111 != 0,
+            "decompressed binary should be executable"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_install_binary_passes_through_non_gzip() {
+        let dir = std::env::temp_dir().join("octx-test-install-raw");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let source = dir.join("raw");
+        let dest = dir.join("out");
+        fs::write(&source, b"not gzipped").unwrap();
+
+        install_binary(&source, &dest).expect("install should succeed");
+        assert_eq!(fs::read(&dest).unwrap(), b"not gzipped");
+
         let _ = fs::remove_dir_all(&dir);
     }
 

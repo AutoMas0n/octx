@@ -134,6 +134,14 @@ jobs:
           path: artifacts
       - name: Build storage archive
         run: tar -czf storage.tar.gz -C storage .
+      - name: Collect arm skill files
+        run: |
+          for d in arms/*/; do
+            name=$(basename "$d")
+            if [ -f "$d/skill.md" ]; then
+              cp "$d/skill.md" "${name}.skill.md"
+            fi
+          done
       - name: Generate registry-index.json
         run: |
           set -euo pipefail
@@ -161,6 +169,7 @@ jobs:
             --arg ts "$TIMESTAMP" \
             --arg base "$BASE_URL" \
             --arg storage_sha "$STORAGE_SHA" \
+            --argjson skills "$(for d in arms/*/; do if [ -f "$d/skill.md" ]; then basename "$d"; fi; done | jq -R -s 'split("\n") | map(select(. != ""))')" \
             --argjson shas "$SHAS" \
             '
             def downloads($bin):
@@ -193,11 +202,12 @@ jobs:
                 $shas
                 | to_entries
                 | map(select(.key != "octx"))
-                | map({ key: .key,
-                        value: { description: (arm_descriptions)[.key],
-                                 repository: "https://github.com/AutoMas0n/octx",
-                                 skill_url: ($base + "/" + .key + ".skill.md"),
-                                 versions: { ($version): { downloads: downloads(.key) } } } })
+                | map(.key as $k
+                      | { key: $k,
+                          value: { description: ((arm_descriptions)[$k] // "octx arm"),
+                                   repository: "https://github.com/AutoMas0n/octx",
+                                   skill_url: (if ($skills | index($k)) then ($base + "/" + $k + ".skill.md") else null end),
+                                   versions: { ($version): { downloads: downloads($k) } } } })
                 | from_entries
               )
             }' > registry-index.json
@@ -209,6 +219,7 @@ jobs:
           files: |
             artifacts/artifacts-*/*.gz
             artifacts/artifacts-*/*.sha256
+            *.skill.md
             registry-index.json
             storage.tar.gz
           body: |

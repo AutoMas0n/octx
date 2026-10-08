@@ -244,13 +244,12 @@ async fn self_update() -> Result<(), OctxError> {
         }
     }
 
-    // Download new binary
+    // Download new binary and verify its checksum (over the compressed archive)
     let tmp_path = data_dir.join("octx.new");
-    let (bytes, _cached) = crate::install::fetch(url, &data_dir.join("octx.etag")).await?;
-
     if let Some(parent) = tmp_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    let (bytes, _cached) = crate::install::fetch(url, &data_dir.join("octx.etag")).await?;
     std::fs::write(&tmp_path, &bytes)?;
 
     // Verify checksum
@@ -259,19 +258,23 @@ async fn self_update() -> Result<(), OctxError> {
     // Determine current binary path
     let current_exe = std::env::current_exe()?;
 
-    // Atomically replace
+    // Replace in place. install_binary decompresses the archive and restores
+    // the executable bit before the atomic rename — writing the raw download
+    // here would leave a gzipped, non-executable "binary" behind.
     #[cfg(unix)]
     {
-        std::fs::rename(&tmp_path, &current_exe)?;
+        crate::util::install_binary(&tmp_path, &current_exe)?;
     }
 
     #[cfg(not(unix))]
     {
         let old_path = data_dir.join("octx.old");
-        std::fs::rename(&current_exe, &old_path)?;
-        std::fs::rename(&tmp_path, &current_exe)?;
+        let _ = std::fs::rename(&current_exe, &old_path);
+        crate::util::install_binary(&tmp_path, &current_exe)?;
         let _ = std::fs::remove_file(&old_path);
     }
+
+    let _ = std::fs::remove_file(&tmp_path);
 
     eprintln!("octx: updated to version {version}");
 
