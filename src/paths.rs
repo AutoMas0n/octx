@@ -1,5 +1,24 @@
 use std::path::PathBuf;
 
+// Thread-local override for config_dir in tests.
+// Each test thread gets its own independent override,
+// so concurrent tests never step on each other.
+#[cfg(test)]
+thread_local! {
+    static TEST_CONFIG_DIR: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Redirect config_dir for testing. Sets the thread-local override.
+/// The override persists for the duration of the test — no guard needed
+/// because each thread starts with a fresh `None`.
+#[cfg(test)]
+pub fn set_test_config_dir(path: PathBuf) {
+    TEST_CONFIG_DIR.with(|cell| {
+        *cell.borrow_mut() = Some(path);
+    });
+}
+
 /// Returns the data directory for binaries, cache, and state.
 /// Linux:   ~/.local/share/octx/
 /// macOS:   ~/Library/Application Support/octx/
@@ -14,7 +33,16 @@ pub fn data_dir() -> PathBuf {
 /// Linux:   ~/.config/octx/
 /// macOS:   ~/Library/Application Support/octx/   (same as data on macOS)
 /// Windows: C:\Users\<user>\AppData\Roaming\octx/
+///
+/// In tests, returns the test override path if one is set.
 pub fn config_dir() -> PathBuf {
+    #[cfg(test)]
+    {
+        let result = TEST_CONFIG_DIR.with(|cell| cell.borrow().clone());
+        if let Some(override_path) = result {
+            return override_path;
+        }
+    }
     dirs::config_dir()
         .expect("octx config_dir: home directory not found (are you in a sandbox?)")
         .join("octx")

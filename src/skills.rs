@@ -96,77 +96,72 @@ mod tests {
     use super::*;
     use std::fs;
 
+    /// Creates a unique temp config dir for test isolation.
+    fn with_isolated_config(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join("octx-test-skills").join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::paths::set_test_config_dir(dir.clone());
+        dir
+    }
+
     #[test]
     fn test_link_add_registers_in_config() {
-        let dir = std::env::temp_dir().join("octx-test-skills-link-add");
-        let _ = fs::remove_dir_all(&dir);
+        let base = with_isolated_config("link-add");
 
-        let agent_dir = dir.join("agent");
+        let agent_dir = base.join("agent");
         let result = link_add("pi", agent_dir.to_str().unwrap());
         assert!(result.is_ok(), "link_add should succeed");
 
         let cfg = crate::config::Config::load().unwrap();
         let links = cfg.links.unwrap();
         assert!(links.contains_key("pi"));
-
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn test_link_add_creates_directory() {
-        let dir = std::env::temp_dir().join("octx-test-skills-link-add-dir");
-        let _ = fs::remove_dir_all(&dir);
+        let base = with_isolated_config("link-add-dir");
 
-        let agent_dir = dir.join("agent");
+        let agent_dir = base.join("agent");
         assert!(!agent_dir.exists(), "dir should not exist before link_add");
         link_add("pi", agent_dir.to_str().unwrap()).unwrap();
         assert!(agent_dir.exists(), "dir should exist after link_add");
-
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn test_link_remove_removes_from_config() {
-        let dir = std::env::temp_dir().join("octx-test-skills-link-remove");
-        let _ = fs::remove_dir_all(&dir);
+        let base = with_isolated_config("link-remove");
 
-        let agent_dir = dir.join("agent");
+        let agent_dir = base.join("agent");
         link_add("pi", agent_dir.to_str().unwrap()).unwrap();
         link_remove("pi").unwrap();
 
         let cfg = crate::config::Config::load().unwrap();
         let links = cfg.links.unwrap_or_default();
         assert!(!links.contains_key("pi"));
-
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn test_link_list_returns_registered_links() {
-        let dir = std::env::temp_dir().join("octx-test-skills-link-list");
-        let _ = fs::remove_dir_all(&dir);
+        let base = with_isolated_config("link-list");
 
-        let agent_dir = dir.join("agent");
+        let agent_dir = base.join("agent");
         link_add("pi", agent_dir.to_str().unwrap()).unwrap();
 
         let list = link_list();
         assert!(!list.is_empty(), "list should not be empty");
         assert!(list.iter().any(|(name, _)| name == "pi"));
-
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     #[cfg(unix)]
     fn test_sync_skill_to_dir_creates_symlink() {
-        let dir = std::env::temp_dir().join("octx-test-skills-symlink");
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let base = with_isolated_config("symlink");
 
-        let source = dir.join("tool.md");
+        let source = base.join("tool.md");
         fs::write(&source, b"skill content").unwrap();
 
-        let target_dir = dir.join("agent");
+        let target_dir = base.join("agent");
         fs::create_dir_all(&target_dir).unwrap();
 
         sync_skill_to_dir("tool", &source, &target_dir).unwrap();
@@ -179,12 +174,12 @@ mod tests {
             "skill content",
             "symlink target content should match source via symlink"
         );
-
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn test_sync_all_with_no_links_does_nothing() {
+        let _base = with_isolated_config("sync-all");
+
         // With no config/links, sync_all should return Ok without doing anything
         let result = sync_all();
         assert!(result.is_ok(), "sync_all with no links should succeed");
