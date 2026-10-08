@@ -78,8 +78,12 @@ The harness arm SHALL accept CLI arguments that override any field in the YAML d
 - **WHEN** the harness YAML specifies `defaults.model: claude-sonnet-4` and the user runs `--model gpt-4o`
 - **THEN** the agent arm receives `--model gpt-4o`
 
+#### Scenario: System prompt default is passed through
+- **WHEN** the harness YAML specifies `defaults.system_prompt: "You are a careful reviewer."`
+- **THEN** the agent arm receives `--system-prompt "You are a careful reviewer."`
+
 ### Requirement: Dispatch to the agent arm
-The harness arm SHALL invoke the agent arm by running `octx x agent <computed-args>` (JIT install if needed). The harness arm SHALL append `--script <path-to-harness-script>` and `--script-args <...>` (from CLI or YAML args) to the computed arguments. Any remaining CLI arguments after `--` SHALL be appended to the script's argument list.
+The harness arm SHALL invoke the agent arm by running `octx x agent <computed-args>` (JIT install if needed), so the `octx` head MUST be available on the harness arm's `PATH`. The harness arm SHALL append `--script <path-to-harness-script>` and `--script-args <...>` (from CLI or YAML args) to the computed arguments. Any remaining CLI arguments after `--` SHALL be appended to the script's argument list.
 
 #### Scenario: Dispatch with computed args
 - **WHEN** the harness is resolved and defaults are merged with overrides

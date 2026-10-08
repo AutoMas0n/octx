@@ -24,7 +24,7 @@ The octx head can install and run single-purpose arms (fmt, parse, deploy), but 
   - `develop-arm/` — the first harness: runs an ACP agent (pi by default) with a script that orchestrates a develop loop
   - Each harness is a directory with `harness.yaml` (defaults) and one or more scripts (Python, bash, etc.)
 
-- **New arm entry in `registry-index.json`** for both `harness` and `agent`
+- **Release pipeline wiring** — `.github/workflows/release.yml` gains `octx-agent`/`octx-harness` in its build loop, `agent`/`harness` in its artifact-preparation loop, and description entries in the `arm_descriptions` map, so both arms are built, uploaded, and advertised by the generated registry index. The registry index itself is not a repo file — CI generates it from the built artifacts.
 
 ## Capabilities
 
@@ -44,6 +44,5 @@ The octx head can install and run single-purpose arms (fmt, parse, deploy), but 
 - **`arms/harness/src/main.rs`** — YAML parser, harness resolution, argument construction, dispatch
 - **`storage/harnesses/develop-arm/harness.yaml`** — first harness definition
 - **`storage/harnesses/develop-arm/script.py`** — first harness script
-- **`Cargo.toml`** — workspace members extended to include `arms/agent` and `arms/harness`
-- **`registry-index.json`** — new entries for `agent` and `harness` arms
-- No changes to the head binary — both are arms
+- **`.github/workflows/release.yml`** — arm build loop, artifact-preparation loop, and `arm_descriptions` map extended for `agent` and `harness`
+- No changes to the head binary — both are arms. The harness arm dispatches by re-entering the head (`octx x agent …`), so a working `octx` on `PATH` is required at runtime; that is an operational dependency, not a head code change.

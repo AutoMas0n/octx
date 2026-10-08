@@ -42,7 +42,7 @@ The agent arm SHALL apply session configuration options passed via CLI: `--model
 - **THEN** the agent arm warns that the option is unsupported and continues
 
 ### Requirement: Expose a Unix socket to orchestration scripts
-The agent arm SHALL create a Unix socket at a path (default `{tmpdir}/octx-harness-<pid>.sock`) and spawn the orchestration script (from `--script <path>`) with `HARNESS_SOCKET` set to that path. The socket SHALL use newline-delimited JSON (NDJSON). The script SHALL be able to send prompts and receive streamed events.
+The agent arm SHALL create a Unix socket at a path (default `{tmpdir}/octx-agent-<pid>.sock`) and spawn the orchestration script (from `--script <path>`) with `HARNESS_SOCKET` set to that path. The socket SHALL use newline-delimited JSON (NDJSON). The script SHALL be able to send prompts, cancel the in-flight turn, set session config options, and receive streamed events.
 
 #### Scenario: Script connects and sends a prompt
 - **WHEN** the orchestration script connects to the socket and sends `{"type":"prompt","text":"..."}`
@@ -51,6 +51,14 @@ The agent arm SHALL create a Unix socket at a path (default `{tmpdir}/octx-harne
 #### Scenario: Script receives streamed events
 - **WHEN** the agent produces output during a prompt turn
 - **THEN** the agent arm emits NDJSON events to the socket: `{"type":"text","delta":...}`, `{"type":"tool","name":...,"status":...}`, and `{"type":"turn_done",...}` when the turn completes
+
+#### Scenario: Script cancels the in-flight turn
+- **WHEN** the orchestration script sends `{"type":"cancel","id":"p1"}` while a prompt turn is running
+- **THEN** the agent arm cancels that turn and reports the cancelled turn back to the script
+
+#### Scenario: Script sets a session config option
+- **WHEN** the orchestration script sends `{"type":"set_config","option":"model","value":"claude-sonnet-4"}`
+- **THEN** the agent arm applies the option to the active session when the agent advertises it, and warns without failing when it does not
 
 ### Requirement: Execute tools on behalf of the agent
 When the agent requests tool execution, the agent arm SHALL execute supported tools and return results to the agent. The agent arm SHALL support the ACP terminal surface (`terminal/create` — bash, python, or arbitrary commands) and the filesystem surface (`fs/read_text_file`, `fs/write_text_file`) when the agent uses them.
@@ -117,6 +125,13 @@ When the launched agent is pi, the agent arm SHALL support `--skills <a,b,c>` (c
 #### Scenario: Set pi thinking level
 - **WHEN** the user runs with `--agent pi --thinking high`
 - **THEN** the session's `thought_level` config option is set to `high`
+
+### Requirement: Apply a system prompt
+When `--system-prompt <text>` is provided, the agent arm SHALL apply it agent-agnostically by prepending it to the first prompt it sends in the session, so it works with any ACP agent regardless of the config options that agent advertises.
+
+#### Scenario: System prompt is applied to the session
+- **WHEN** the user runs with `--system-prompt "You are a careful reviewer."`
+- **THEN** the first prompt the agent receives is prefixed with that text and the original prompt body
 
 ### Requirement: OCTX_TOKEN injection
 The agent arm SHALL read credentials from octx's credential store via `OCTX_TOKEN_*` env vars (already injected by the head) and pass them through to the agent subprocess environment.

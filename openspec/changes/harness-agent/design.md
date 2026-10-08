@@ -24,7 +24,9 @@ The existing head dispatches arms via `octx x <name>` which JIT-installs and run
 ## Decisions
 
 ### Decision: Official ACP Rust SDK (`agent-client-protocol` crate)
-The `agent-client-protocol` crate (from agentclientprotocol.com) is the official SDK. It provides the `Client` trait, `AgentConnection` for subprocess management, and typed protocol types. Alternatives: `acpx` (community wrapper, pre-1.0), `acp-cli` (reference implementation, too coupled). The official SDK is the safest bet for protocol compatibility.
+The `agent-client-protocol` crate (from agentclientprotocol.com, repo `agentclientprotocol/rust-sdk`) is the official SDK. As of the pinned `3.x` line it exposes a **role/connection** model rather than a `Client` trait: `AcpAgent` / `AcpAgentConfig` manage the subprocess, `Client.builder().name(...).connect_with(agent, |cx| ...)` establishes the connection, and the session API (`build_session` / `resume_session` / `ActiveSession::send_prompt` / a `SessionMessage` stream) carries the conversation. Native subprocess support is behind the **non-default `process` feature**, so the dependency is declared as `agent-client-protocol = { version = "3", features = ["process"] }`. Alternatives: `acpx` (community wrapper, pre-1.0), `acp-cli` (reference implementation, too coupled). The official SDK is the safest bet for protocol compatibility.
+
+The SDK is executor-agnostic, but its subprocess I/O is built on `async-io`/`async-process` (not `tokio`). The agent arm therefore keeps `tokio` for its own Unix-socket server and script supervision, and drives the SDK futures on that same runtime; it must not assume the SDK exposes tokio-native types.
 
 ### Decision: ACP v1 transport (stdio)
 ACP v1 over stdio is the most widely supported transport. Every agent listed in the registry (pi, claude, codex, gemini, etc.) supports stdio. v2 is still in draft and fewer agents support it. The agent arm advertises `terminal` and `fs` capabilities during initialization.
@@ -37,12 +39,25 @@ The orchestration script communicates with the agent arm over a Unix socket usin
 
 Socket path: `{tmpdir}/octx-agent-<pid>.sock` (configurable via `--ipc-path`).
 
-### Decision: Agent arm implements the full ACP `Client` trait
-The agent arm implements `agent_client_protocol::Client` with:
-- `request_permission` — maps to the configured permission mode (approve-all, approve-reads, deny-all)
-- `session_notification` — receives `AgentMessageChunk` (text) and `ToolCall`/`ToolCallUpdate` events, forwards them to the socket as NDJSON
+### Decision: Agent arm consumes the SDK as a client role with connection handlers
+The agent arm acts as the ACP `Client` role (there is no trait to implement). Inside the `connect_with` callback it:
+- registers a permission handler that maps to the configured mode (approve-all, approve-reads, deny-all)
+- registers `session/update` handlers for `AgentMessageChunk` (text) and tool-call updates, forwarding them to the socket as NDJSON
+- builds the session and consumes the `SessionMessage` stream for each turn
 
-This is the standard pattern — the ACP SDK handles the JSON-RPC plumbing, the client implementation handles the application logic.
+This is the standard pattern — the SDK handles the JSON-RPC plumbing and the arm supplies application logic through handlers.
+
+### Decision: Session starts before the script connects
+Start the ACP session (`initialize` → `session/new`) first, then accept a single script connection on the socket. No buffering is needed because the agent emits nothing until the first prompt; the script can inspect the `ready` event on connect. This resolves the previous open question in favour of session-first ordering.
+
+### Decision: System prompt is prepended to the first prompt
+`--system-prompt <text>` is applied agent-agnostically by prefixing the first prompt of the session, rather than requiring a `system_prompt`-shaped ACP config option that many agents do not advertise. This keeps the behaviour identical across every ACP agent.
+
+### Decision: Runtime `set_config` maps to session config options
+The socket `{"type":"set_config","option":…,"value":…}` message maps to `session/config_option` on the active session, reusing the same path as the startup `--model`/`--provider`/`--thinking` flags and warning (not failing) when the agent does not advertise the option.
+
+### Decision: Release pipeline enumerates both arms explicitly
+`.github/workflows/release.yml` hardcodes arm names in three places (the `cargo build -p` loop, the artifact-preparation loop, and the `arm_descriptions` map). The change MUST extend all three, because `registry-index.json` is generated in CI from the built artifacts and is not a repo-authored file. Without this, the arms never publish and `octx x agent`/`octx x harness` fail JIT-install.
 
 ### Decision: Script lifecycle managed by the agent arm
 The agent arm spawns the orchestration script as a subprocess, creates the socket, and waits for the connection. The script drives the conversation: connect, send prompts, read events, decide when to stop. The script's exit code is the agent arm's exit code. This means:
@@ -61,7 +76,7 @@ This is set via `PI_CODING_AGENT_DIR` env var when launching pi-acp. The temp di
 When the agent calls `terminal/create` or `fs/read_text_file`, the agent arm executes the operation synchronously and returns the result before the ACP turn continues. This matches the ACP model where the agent waits for tool results before producing more text. Long-running commands are bounded by `--output-byte-limit` and `--timeout`.
 
 ### Decision: Both arms are in the workspace with opt-level = "z"
-Like the existing arms, both harness and agent use `opt-level = "z"`, `lto = true`, `strip = "symbols"`, `codegen-units = 1` in their release profile. The agent arm additionally depends on `agent-client-protocol` (which brings in tokio, serde, serde_json — already in the workspace).
+Like the existing arms, both harness and agent use `opt-level = "z"`, `lto = true`, `strip = "symbols"`, `codegen-units = 1` in their release profile. The agent arm additionally depends on `agent-client-protocol` with the `process` feature, which brings in `futures`/`async-io` (and `rustix` for process groups) rather than `tokio`; `tokio` is kept for the arm's own socket server. Both crates must cross-compile for the same six release targets as the existing arms (musl and Android), so the dependency set is verified early for each target.
 
 ## Socket Protocol (NDJSON)
 
@@ -152,4 +167,4 @@ Like the existing arms, both harness and agent use `opt-level = "z"`, `lto = tru
 
 ## Open Questions
 
-- Socket connection pattern: does the agent arm wait for the script to connect before starting the ACP session, or start the ACP session immediately and buffer events until the script connects? Starting immediately (ACP session first, then wait for script connection) is simpler and lets the script inspect the ready state on connect. Buffering is unnecessary since the agent produces no events until the first prompt.
+None. The socket ordering question is resolved above (session-first, single connection, no buffering), and the remaining scope questions (auth, `cancel`, `set_config`, `system_prompt`) are settled in the specs.
