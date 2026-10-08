@@ -904,7 +904,7 @@ dependencies = [
 
 [[package]]
 name = "octx"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -930,7 +930,7 @@ dependencies = [
 
 [[package]]
 name = "octx-deploy"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -938,7 +938,7 @@ dependencies = [
 
 [[package]]
 name = "octx-fmt"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -947,7 +947,7 @@ dependencies = [
 
 [[package]]
 name = "octx-parse"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "clap",

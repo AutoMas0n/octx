@@ -71,7 +71,7 @@ mod tests {
 
     #[test]
     fn test_error_display_io() {
-        let err = OctxError::Io(std::io::Error::new(std::io::ErrorKind::Other, "disk full"));
+        let err = OctxError::Io(std::io::Error::other("disk full"));
         assert_eq!(err.to_string(), "I/O error: disk full");
     }
 

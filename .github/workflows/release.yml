@@ -38,8 +38,11 @@ jobs:
       matrix:
         target:
           - x86_64-unknown-linux-musl
-          - arm-unknown-linux-gnueabihf
           - aarch64-unknown-linux-musl
+          - arm-unknown-linux-gnueabihf
+          - aarch64-linux-android
+          - armv7-linux-androideabi
+          - x86_64-linux-android
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -64,6 +67,29 @@ jobs:
               echo "CC_aarch64_unknown_linux_musl=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
               echo "AR_aarch64_unknown_linux_musl=aarch64-linux-gnu-ar" >> "$GITHUB_ENV"
               echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+              ;;
+            *-linux-android*)
+              # Android links bionic, not musl: a musl-static binary cannot
+              # resolve DNS there (no /etc/resolv.conf). Use the NDK's clang,
+              # which is preinstalled on the runner image.
+              NDK="${ANDROID_NDK_LATEST_HOME:-${ANDROID_NDK_HOME:-}}"
+              if [ -z "$NDK" ]; then
+                NDK=$(ls -d /usr/local/lib/android/sdk/ndk/* 2>/dev/null | sort -V | tail -1)
+              fi
+              if [ -z "$NDK" ]; then
+                echo "Android NDK not found on this runner" >&2
+                exit 1
+              fi
+              BIN="${NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+              case ${{ matrix.target }} in
+                aarch64-linux-android)   CLANG_TRIPLE=aarch64-linux-android21 ;;
+                armv7-linux-androideabi) CLANG_TRIPLE=armv7a-linux-androideabi21 ;;
+                x86_64-linux-android)    CLANG_TRIPLE=x86_64-linux-android21 ;;
+              esac
+              VAR=$(echo "${{ matrix.target }}" | tr '[:lower:]-' '[:upper:]_')
+              echo "CC_${VAR}=${BIN}/${CLANG_TRIPLE}-clang" >> "$GITHUB_ENV"
+              echo "AR_${VAR}=${BIN}/llvm-ar" >> "$GITHUB_ENV"
+              echo "CARGO_TARGET_${VAR}_LINKER=${BIN}/${CLANG_TRIPLE}-clang" >> "$GITHUB_ENV"
               ;;
           esac
       - name: Build head
@@ -107,142 +133,70 @@ jobs:
         run: tar -czf storage.tar.gz -C storage .
       - name: Generate registry-index.json
         run: |
+          set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
           TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           STORAGE_SHA=$(sha256sum storage.tar.gz | cut -d' ' -f1)
-
-          # Build sha256 maps per target
-          declare -A HEAD_SHA
-          declare -A FMT_SHA
-          declare -A PARSE_SHA
-          declare -A DEPLOY_SHA
-
-          for target in x86_64-unknown-linux-musl arm-unknown-linux-gnueabihf aarch64-unknown-linux-musl; do
-            HEAD_SHA[$target]=$(cat "artifacts/artifacts-$target/octx-$target.gz.sha256")
-            FMT_SHA[$target]=$(cat "artifacts/artifacts-$target/fmt-$target.gz.sha256")
-            PARSE_SHA[$target]=$(cat "artifacts/artifacts-$target/parse-$target.gz.sha256")
-            DEPLOY_SHA[$target]=$(cat "artifacts/artifacts-$target/deploy-$target.gz.sha256")
-          done
-
           BASE_URL="https://github.com/AutoMas0n/octx/releases/download/v${VERSION}"
+
+          # Discover binaries/targets from the built artifacts so this can never
+          # drift out of sync with the release matrix again.
+          SHAS=$(
+            for f in artifacts/artifacts-*/*.gz.sha256; do
+              name=$(basename "$f" .gz.sha256)   # e.g. fmt-aarch64-linux-android
+              bin=${name%%-*}                    # fmt
+              target=${name#*-}                  # aarch64-linux-android
+              jq -n --arg b "$bin" --arg t "$target" --arg s "$(cat "$f")" \
+                '{bin: $b, target: $t, sha: $s}'
+            done | jq -s 'group_by(.bin)
+                          | map({key: .[0].bin, value: (map({key: .target, value: .sha}) | from_entries)})
+                          | from_entries'
+          )
 
           jq -n \
             --arg version "$VERSION" \
             --arg ts "$TIMESTAMP" \
             --arg base "$BASE_URL" \
-            --arg head_x86 "$(jq -R -s '.' <<<"${HEAD_SHA[x86_64-unknown-linux-musl]}")" \
-            --arg head_arm "$(jq -R -s '.' <<<"${HEAD_SHA[arm-unknown-linux-gnueabihf]}")" \
-            --arg head_aarch64 "$(jq -R -s '.' <<<"${HEAD_SHA[aarch64-unknown-linux-musl]}")" \
-            --arg fmt_x86 "$(jq -R -s '.' <<<"${FMT_SHA[x86_64-unknown-linux-musl]}")" \
-            --arg fmt_arm "$(jq -R -s '.' <<<"${FMT_SHA[arm-unknown-linux-gnueabihf]}")" \
-            --arg fmt_aarch64 "$(jq -R -s '.' <<<"${FMT_SHA[aarch64-unknown-linux-musl]}")" \
-            --arg parse_x86 "$(jq -R -s '.' <<<"${PARSE_SHA[x86_64-unknown-linux-musl]}")" \
-            --arg parse_arm "$(jq -R -s '.' <<<"${PARSE_SHA[arm-unknown-linux-gnueabihf]}")" \
-            --arg parse_aarch64 "$(jq -R -s '.' <<<"${PARSE_SHA[aarch64-unknown-linux-musl]}")" \
-            --arg deploy_x86 "$(jq -R -s '.' <<<"${DEPLOY_SHA[x86_64-unknown-linux-musl]}")" \
-            --arg deploy_arm "$(jq -R -s '.' <<<"${DEPLOY_SHA[arm-unknown-linux-gnueabihf]}")" \
-            --arg deploy_aarch64 "$(jq -R -s '.' <<<"${DEPLOY_SHA[aarch64-unknown-linux-musl]}")" \
             --arg storage_sha "$STORAGE_SHA" \
-            '{
+            --argjson shas "$SHAS" \
+            '
+            def downloads($bin):
+              $shas[$bin]
+              | to_entries
+              | map({ key: .key,
+                      value: { url: ($base + "/" + $bin + "-" + .key + ".gz"),
+                               sha256: .value } })
+              | from_entries;
+
+            def arm_descriptions:
+              { fmt: "Opinionated code formatter",
+                parse: "File parser",
+                deploy: "Deployment tool" };
+
+            {
               registry_version: 1,
               updated: $ts,
               head: {
                 version: $version,
-                etag: ("\"" + ($head_x86 | .[0:16]) + "\""),
-                downloads: {
-                  "x86_64-unknown-linux-musl": {
-                    url: ($base + "/octx-x86_64-unknown-linux-musl.gz"),
-                    sha256: $head_x86
-                  },
-                  "arm-unknown-linux-gnueabihf": {
-                    url: ($base + "/octx-arm-unknown-linux-gnueabihf.gz"),
-                    sha256: $head_arm
-                  },
-                  "aarch64-unknown-linux-musl": {
-                    url: ($base + "/octx-aarch64-unknown-linux-musl.gz"),
-                    sha256: $head_aarch64
-                  }
-                }
+                etag: ("\"" + ($shas.octx | to_entries | sort_by(.key) | .[0].value | .[0:16]) + "\""),
+                downloads: downloads("octx")
               },
               storage: {
                 version: $version,
                 etag: ("\"" + ($storage_sha | .[0:16]) + "\""),
-                download: {
-                  url: ($base + "/storage.tar.gz"),
-                  sha256: $storage_sha
-                }
+                download: { url: ($base + "/storage.tar.gz"), sha256: $storage_sha }
               },
-              arms: {
-                fmt: {
-                  description: "Opinionated code formatter",
-                  repository: "https://github.com/AutoMas0n/octx",
-                  skill_url: ($base + "/fmt.skill.md"),
-                  versions: {
-                    ($version): {
-                      downloads: {
-                        "x86_64-unknown-linux-musl": {
-                          url: ($base + "/fmt-x86_64-unknown-linux-musl.gz"),
-                          sha256: $fmt_x86
-                        },
-                        "arm-unknown-linux-gnueabihf": {
-                          url: ($base + "/fmt-arm-unknown-linux-gnueabihf.gz"),
-                          sha256: $fmt_arm
-                        },
-                        "aarch64-unknown-linux-musl": {
-                          url: ($base + "/fmt-aarch64-unknown-linux-musl.gz"),
-                          sha256: $fmt_aarch64
-                        }
-                      }
-                    }
-                  }
-                },
-                parse: {
-                  description: "File parser",
-                  repository: "https://github.com/AutoMas0n/octx",
-                  skill_url: ($base + "/parse.skill.md"),
-                  versions: {
-                    ($version): {
-                      downloads: {
-                        "x86_64-unknown-linux-musl": {
-                          url: ($base + "/parse-x86_64-unknown-linux-musl.gz"),
-                          sha256: $parse_x86
-                        },
-                        "arm-unknown-linux-gnueabihf": {
-                          url: ($base + "/parse-arm-unknown-linux-gnueabihf.gz"),
-                          sha256: $parse_arm
-                        },
-                        "aarch64-unknown-linux-musl": {
-                          url: ($base + "/parse-aarch64-unknown-linux-musl.gz"),
-                          sha256: $parse_aarch64
-                        }
-                      }
-                    }
-                  }
-                },
-                deploy: {
-                  description: "Deployment tool",
-                  repository: "https://github.com/AutoMas0n/octx",
-                  skill_url: ($base + "/deploy.skill.md"),
-                  versions: {
-                    ($version): {
-                      downloads: {
-                        "x86_64-unknown-linux-musl": {
-                          url: ($base + "/deploy-x86_64-unknown-linux-musl.gz"),
-                          sha256: $deploy_x86
-                        },
-                        "arm-unknown-linux-gnueabihf": {
-                          url: ($base + "/deploy-arm-unknown-linux-gnueabihf.gz"),
-                          sha256: $deploy_arm
-                        },
-                        "aarch64-unknown-linux-musl": {
-                          url: ($base + "/deploy-aarch64-unknown-linux-musl.gz"),
-                          sha256: $deploy_aarch64
-                        }
-                      }
-                    }
-                  }
-                }
-              }
+              arms: (
+                $shas
+                | to_entries
+                | map(select(.key != "octx"))
+                | map({ key: .key,
+                        value: { description: (arm_descriptions)[.key],
+                                 repository: "https://github.com/AutoMas0n/octx",
+                                 skill_url: ($base + "/" + .key + ".skill.md"),
+                                 versions: { ($version): { downloads: downloads(.key) } } } })
+                | from_entries
+              )
             }' > registry-index.json
 
           echo "Generated registry-index.json:"
@@ -250,12 +204,8 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: |
-            artifacts/artifacts-x86_64-unknown-linux-musl/*.gz
-            artifacts/artifacts-x86_64-unknown-linux-musl/*.sha256
-            artifacts/artifacts-arm-unknown-linux-gnueabihf/*.gz
-            artifacts/artifacts-arm-unknown-linux-gnueabihf/*.sha256
-            artifacts/artifacts-aarch64-unknown-linux-musl/*.gz
-            artifacts/artifacts-aarch64-unknown-linux-musl/*.sha256
+            artifacts/artifacts-*/*.gz
+            artifacts/artifacts-*/*.sha256
             registry-index.json
             storage.tar.gz
           body: |

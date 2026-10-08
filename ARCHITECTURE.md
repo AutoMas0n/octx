@@ -240,7 +240,7 @@ src/
 │   ├── load()               # Parse {config_dir}/octx/config.toml, merge defaults
 │   └── save()               # Write config (links, registry URL, etc.)
 ├── platform.rs              # Target triple detection
-│   └── detect()             # uname -m → triple mapping table
+│   └── detect()             # uname -m + uname -o → triple mapping table
 ├── error.rs                 # OctxError enum (thiserror)
 └── util.rs                  # sha256, path helpers, temp file cleanup
 ```
@@ -348,25 +348,23 @@ No version targeting — always installs the latest version listed in the index.
 ## 6. Platform Detection
 
 ```rust
+/// `uname -s` reports "Linux" on Android too — only `uname -o` (=> "Android")
+/// distinguishes them. Android needs its own targets because a musl-static
+/// binary cannot resolve DNS there (musl reads /etc/resolv.conf, which does
+/// not exist on Android); Android builds link bionic instead.
 fn detect() -> &'static str {
-    let arch = std::process::Command::new("uname")
-        .arg("-m")
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok());
-
-    match arch.as_deref() {
-        Some("x86_64")           => "x86_64-unknown-linux-musl",
-        Some("aarch64")          => "aarch64-unknown-linux-musl",
-        Some("armv6l")           => "arm-unknown-linux-gnueabihf",
-        Some("armv7l")           => "armv7-unknown-linux-gnueabihf",
-        Some("arm64")            => "aarch64-unknown-linux-musl",  // macOS
-        _ => panic!("unsupported architecture: {:?}", arch),
+    match (uname("-m").as_str(), is_android()) {
+        ("x86_64",           false) => "x86_64-unknown-linux-musl",
+        ("aarch64" | "arm64", false) => "aarch64-unknown-linux-musl",
+        ("armv6l",           false) => "arm-unknown-linux-gnueabihf",
+        ("armv7l",           false) => "armv7-unknown-linux-gnueabihf",
+        ("aarch64" | "arm64", true)  => "aarch64-linux-android",
+        ("armv7l",            true)  => "armv7-linux-androideabi",
+        ("x86_64",            true)  => "x86_64-linux-android",
+        (other, _) => panic!("unsupported architecture: {other:?}"),
     }
 }
 ```
-
-`ponytail: limited to Linux/macOS triples. Add Windows and Android when platform support is needed.`
 
 ---
 

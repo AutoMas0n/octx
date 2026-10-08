@@ -38,6 +38,22 @@ detect_target() {
         die "unsupported OS: $os — only Linux is supported. Run 'uname -m' and open an issue."
     fi
 
+    # Android reports "Linux" from `uname -s` but is not a Linux libc — it uses
+    # bionic. A musl-static binary cannot resolve DNS on Android (musl reads
+    # /etc/resolv.conf, which Android does not have), so Android gets its own
+    # targets. `uname -o` => "Android" is the only way to tell them apart.
+    if [ "$(uname -o 2>/dev/null | tr '[:upper:]' '[:lower:]')" = "android" ]; then
+        case "$arch" in
+            aarch64 | arm64) echo "aarch64-linux-android" ;;
+            armv7l) echo "armv7-linux-androideabi" ;;
+            x86_64) echo "x86_64-linux-android" ;;
+            *)
+                die "unsupported Android architecture: $arch — run 'uname -m' and open an issue with the output"
+                ;;
+        esac
+        return 0
+    fi
+
     case "$arch" in
         x86_64)  echo "x86_64-unknown-linux-musl" ;;
         aarch64) echo "aarch64-unknown-linux-musl" ;;
