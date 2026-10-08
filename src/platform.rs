@@ -25,7 +25,7 @@ fn detect_inner() -> Result<String, OctxError> {
     let triple = match arch.as_str() {
         "x86_64" => "x86_64-unknown-linux-musl",
         "aarch64" => "aarch64-unknown-linux-musl",
-        "armv6l" => "armv6-unknown-linux-gnueabihf",
+        "armv6l" => "arm-unknown-linux-gnueabihf",
         "armv7l" => "armv7-unknown-linux-gnueabihf",
         "arm64" => "aarch64-unknown-linux-musl",
         other => {

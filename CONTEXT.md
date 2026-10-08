@@ -84,8 +84,8 @@ let octx_config = config_dir().unwrap().join("octx");
         "url": "https://github.com/AutoMas0n/octx/releases/download/v0.1.0/octx-x86_64-unknown-linux-musl.gz",
         "sha256": "abc123..."
       },
-      "armv6-unknown-linux-gnueabihf": {
-        "url": "https://github.com/AutoMas0n/octx/releases/download/v0.1.0/octx-armv6-unknown-linux-gnueabihf.gz",
+      "arm-unknown-linux-gnueabihf": {
+        "url": "https://github.com/AutoMas0n/octx/releases/download/v0.1.0/octx-arm-unknown-linux-gnueabihf.gz",
         "sha256": "def456..."
       }
     }
@@ -102,8 +102,8 @@ let octx_config = config_dir().unwrap().join("octx");
               "url": "https://github.com/AutoMas0n/octx/releases/download/v0.1.0/fmt-x86_64-unknown-linux-musl.gz",
               "sha256": "abc123..."
             },
-            "armv6-unknown-linux-gnueabihf": {
-              "url": "https://github.com/AutoMas0n/octx/releases/download/v0.1.0/fmt-armv6-unknown-linux-gnueabihf.gz",
+            "arm-unknown-linux-gnueabihf": {
+              "url": "https://github.com/AutoMas0n/octx/releases/download/v0.1.0/fmt-arm-unknown-linux-gnueabihf.gz",
               "sha256": "def456..."
             }
           }

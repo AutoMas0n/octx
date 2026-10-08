@@ -303,8 +303,8 @@ registry_url = "https://my-mirror.example.com/registry-index.json"
         "url": "https://github.com/AutoMas0n/octx/releases/download/v0.1.0/octx-x86_64-unknown-linux-musl.gz",
         "sha256": "abc123..."
       },
-      "armv6-unknown-linux-gnueabihf": {
-        "url": "https://github.com/AutoMas0n/octx/releases/download/v0.1.0/octx-armv6-unknown-linux-gnueabihf.gz",
+      "arm-unknown-linux-gnueabihf": {
+        "url": "https://github.com/AutoMas0n/octx/releases/download/v0.1.0/octx-arm-unknown-linux-gnueabihf.gz",
         "sha256": "def456..."
       }
     }
@@ -329,8 +329,8 @@ registry_url = "https://my-mirror.example.com/registry-index.json"
               "url": "https://github.com/AutoMas0n/octx/releases/download/v0.1.0/fmt-x86_64-unknown-linux-musl.gz",
               "sha256": "abc123..."
             },
-            "armv6-unknown-linux-gnueabihf": {
-              "url": "https://github.com/AutoMas0n/octx/releases/download/v0.1.0/fmt-armv6-unknown-linux-gnueabihf.gz",
+            "arm-unknown-linux-gnueabihf": {
+              "url": "https://github.com/AutoMas0n/octx/releases/download/v0.1.0/fmt-arm-unknown-linux-gnueabihf.gz",
               "sha256": "def456..."
             }
           }
@@ -358,7 +358,7 @@ fn detect() -> &'static str {
     match arch.as_deref() {
         Some("x86_64")           => "x86_64-unknown-linux-musl",
         Some("aarch64")          => "aarch64-unknown-linux-musl",
-        Some("armv6l")           => "armv6-unknown-linux-gnueabihf",
+        Some("armv6l")           => "arm-unknown-linux-gnueabihf",
         Some("armv7l")           => "armv7-unknown-linux-gnueabihf",
         Some("arm64")            => "aarch64-unknown-linux-musl",  // macOS
         _ => panic!("unsupported architecture: {:?}", arch),

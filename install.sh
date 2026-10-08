@@ -41,7 +41,7 @@ detect_target() {
     case "$arch" in
         x86_64)  echo "x86_64-unknown-linux-musl" ;;
         aarch64) echo "aarch64-unknown-linux-musl" ;;
-        armv6l)  echo "armv6-unknown-linux-gnueabihf" ;;
+        armv6l)  echo "arm-unknown-linux-gnueabihf" ;;
         armv7l)  echo "armv7-unknown-linux-gnueabihf" ;;
         arm64)   echo "aarch64-unknown-linux-musl" ;;
         *)
