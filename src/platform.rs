@@ -39,12 +39,15 @@ fn detect_inner() -> Result<String, OctxError> {
 
 /// Returns the machine ID for credential encryption.
 ///
-/// On Linux reads `/etc/machine-id` (falls back to `/var/lib/dbus/machine-id`).
-/// On macOS parses `ioreg -rd1 -c IOPlatformExpertDevice` for `IOPlatformUUID`.
-/// On Windows returns `Err(UnsupportedPlatform)`.
+/// Tries a fallback chain:
+/// 1. `/etc/machine-id` — Linux standard
+/// 2. `/var/lib/dbus/machine-id` — Linux fallback
+/// 3. `getprop ro.build.fingerprint` — Android/Termux (stable per device/ROM)
+/// 4. macOS `ioreg IOPlatformUUID`
+/// 5. `/proc/sys/kernel/random/boot_id` — Docker/container last resort (changes on reboot)
 // ponytail: Windows machine ID is a stub. Implement when adding full Windows support.
 pub fn machine_id() -> Result<String, OctxError> {
-    // Linux: /etc/machine-id or /var/lib/dbus/machine-id
+    // 1. Standard Linux machine-id files
     for path in &["/etc/machine-id", "/var/lib/dbus/machine-id"] {
         if let Ok(id) = std::fs::read_to_string(path) {
             let trimmed = id.trim().to_string();
@@ -54,7 +57,18 @@ pub fn machine_id() -> Result<String, OctxError> {
         }
     }
 
-    // macOS: parse ioreg output
+    // 2. Android/Termux: getprop for a stable device/ROM fingerprint
+    if let Ok(output) = std::process::Command::new("getprop")
+        .arg("ro.build.fingerprint")
+        .output()
+    {
+        let out = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !out.is_empty() {
+            return Ok(out);
+        }
+    }
+
+    // 3. macOS: parse ioreg output
     #[cfg(target_os = "macos")]
     {
         if let Ok(output) = std::process::Command::new("ioreg")
@@ -72,6 +86,17 @@ pub fn machine_id() -> Result<String, OctxError> {
                     }
                 }
             }
+        }
+    }
+
+    // 4. Docker/container fallback: boot_id (changes per boot, but
+    //    lets ephemeral environments function vs crashing outright).
+    // ponytail: boot_id means creds die on container restart. Acceptable for
+    //          ephemeral envs where the alternative is a hard error.
+    if let Ok(id) = std::fs::read_to_string("/proc/sys/kernel/random/boot_id") {
+        let trimmed = id.trim().to_string();
+        if !trimmed.is_empty() {
+            return Ok(trimmed);
         }
     }
 
@@ -111,7 +136,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires /etc/machine-id or /var/lib/dbus/machine-id to exist"]
     fn test_machine_id_returns_some_string() {
         let id = machine_id().expect("machine_id() should succeed on this system");
         assert!(
@@ -121,6 +145,43 @@ mod tests {
         assert!(
             !id.contains('\n'),
             "machine_id() should not contain newlines"
+        );
+    }
+
+    #[test]
+    fn test_getprop_fallback_android() {
+        // Only testable when getprop is on the system (Android/Termux).
+        // Silently skipped on other platforms via early return.
+        let Ok(output) = std::process::Command::new("getprop")
+            .arg("ro.build.fingerprint")
+            .output()
+        else {
+            return;
+        };
+        let out = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        assert!(
+            !out.is_empty(),
+            "getprop ro.build.fingerprint should be non-empty"
+        );
+        assert!(
+            !out.contains('\n'),
+            "getprop output should not contain newlines"
+        );
+    }
+
+    #[test]
+    fn test_boot_id_fallback() {
+        // Testable on any Linux with procfs (most containers, some CI runners).
+        // Silently skipped if the file doesn't exist.
+        let Ok(id) = std::fs::read_to_string("/proc/sys/kernel/random/boot_id") else {
+            return;
+        };
+        let trimmed = id.trim().to_string();
+        assert!(!trimmed.is_empty(), "boot_id should be non-empty");
+        // boot_id is a UUID like "dd2e12c3-abc1-4ef5-8901-abcdef123456"
+        assert!(
+            trimmed.contains('-'),
+            "boot_id should be a UUID (contain hyphens): got {trimmed:?}"
         );
     }
 }
