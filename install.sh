@@ -108,21 +108,22 @@ download_and_install() {
     local target="$1"
     local prefix="$2"
     local url="${OCTX_REPO}/releases/latest/download/${OCTX_BINARY}-${target}.gz"
-    local tmp_dir
+    # Deliberately not `local` — the EXIT trap below outlives this function.
     tmp_dir="$(mktemp -d)"
     local gz_file="${tmp_dir}/${OCTX_BINARY}.gz"
     local bin_file="${tmp_dir}/${OCTX_BINARY}"
 
     # Cleanup on exit
-    trap 'rm -rf "$tmp_dir"' EXIT
+    trap 'rm -rf "${tmp_dir:-}"' EXIT
 
     info "Downloading octx for ${target}..."
     if ! curl -fsSL "$url" -o "$gz_file"; then
         die "download failed — could not fetch ${url}"
     fi
 
-    # Optional: try to fetch and verify SHA256
-    local sha_url="${OCTX_REPO}/releases/latest/download/${OCTX_BINARY}-${target}.sha256"
+    # Optional: try to fetch and verify SHA256.
+    # The checksum asset is named after the archive, so it keeps the .gz.
+    local sha_url="${OCTX_REPO}/releases/latest/download/${OCTX_BINARY}-${target}.gz.sha256"
     if curl -fsSL "$sha_url" -o "${tmp_dir}/checksum.sha256" 2>/dev/null; then
         info "Verifying checksum..."
         local expected actual
