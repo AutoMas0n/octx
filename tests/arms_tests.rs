@@ -56,7 +56,11 @@ fn test_fmt_version() {
         .expect("failed to run fmt --version");
     assert!(output.status.success(), "fmt --version exited non-zero");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("0.1.0"), "version string missing 0.1.0");
+    let version = env!("CARGO_PKG_VERSION");
+    assert!(
+        stdout.contains(version),
+        "version string missing {version}: {stdout}"
+    );
 }
 
 #[test]

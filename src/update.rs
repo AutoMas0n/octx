@@ -102,7 +102,13 @@ pub async fn run() -> Result<(), OctxError> {
         eprintln!("octx: warning: skill sync failed: {e}");
     }
 
-    // 8. Self-update
+    // 8. Sync storage — non-fatal: a stale mirror is better than a failed update.
+    // Already holding update.lock, so call the lock-free variant.
+    if let Err(e) = crate::sync::sync_locked(false).await {
+        eprintln!("octx: warning: storage sync failed: {e}");
+    }
+
+    // 9. Self-update
     if let Err(e) = self_update().await {
         eprintln!("octx: warning: self-update failed: {e}");
     }

@@ -5,12 +5,13 @@ The octx head knows how to install compiled arm binaries from the registry, but 
 ## What Changes
 
 - **New `octx sync` subcommand** — downloads and extracts a `storage.tar.gz` archive from the latest release into `{data_dir}/octx/storage/`
-- **`registry-index.json` gains a `storage` entry** — version, URL, SHA256, and ETag for the storage archive
-- **`octx update` runs sync as its final phase** — keeps storage assets current alongside arms and skills
+- **`registry-index.json` gains a `storage` entry** — version, ETag, and a single platform-independent `download` (URL + SHA256)
+- **`octx update` runs sync as part of its flow** — after arm/skill updates and before self-update, keeping storage assets current alongside arms and skills
 - **`octx sync --force` flag** — re-download even if the ETag matches
 - **Storage is a canonical read-only mirror** — `{data_dir}/octx/storage/` is octx-owned and replaced wholesale on sync; local edits are silently dropped, and user-authored copies live outside it (harnesses under `{config_dir}/harnesses/`)
 - **Storage directory layout** — `{data_dir}/octx/storage/` mirrors the monorepo's `storage/` directory tree
-- **Release pipeline builds `storage.tar.gz`** — archived from the `storage/` directory in the repo root
+- **Repo `storage/` directory** — seeded with a tracked `storage/.gitkeep` so the release archive has a directory to package before harness content (YAML + scripts) lands
+- **Release pipeline builds `storage.tar.gz`** — archived from the `storage/` directory in the repo root (contents only, via `-C storage .`)
 
 ## Capabilities
 
@@ -23,12 +24,10 @@ The octx head knows how to install compiled arm binaries from the registry, but 
 
 ## Impact
 
-- **`src/registry.rs`** — RegistryIndex struct gains an optional `storage` field with version, downloads, etag
-- **`src/update.rs`** — Update phase adds storage sync after arm update and before self-update
+- **`src/registry.rs`** — RegistryIndex gains an optional `storage` field with version, etag, and a single platform-independent `download` (url + sha256)
+- **`src/update.rs`** — Update phase adds storage sync after arm/skill updates and before self-update
 - **`src/cli.rs`** — New `sync` subcommand in the clap definition
-- **`src/install.rs`** — Reuses `fetch_binary` / `fetch_with_cache` machinery for the storage tarball
-- **`src/manifest.rs`** — InstalledManifest optionally tracks last storage sync version/etag
-- **New module `src/sync.rs`** — Sync orchestration: download, verify, extract, manifest tracking
-- **`.github/workflows/release.yml`** — New step: `tar -czf storage.tar.gz -C storage .` and attach to release
-- **`registry-index.json`** — New `storage` entry alongside `head` and `arms`
-- No new external dependencies — reuses tokio, reqwest, sha2, serde that are already in Cargo.toml
+- **New module `src/sync.rs`** — Sync orchestration: conditional GET (ETag/304), checksum verify, atomic extract; owns the cached archive and its ETag
+- **`Cargo.toml`** — Adds `flate2` and `tar` for gzip/tar extraction; everything else (tokio, reqwest, sha2, serde) is already present
+- **`storage/.gitkeep`** — New tracked placeholder so the repo has a `storage/` directory to package before harness content lands
+- **`.github/workflows/release.yml`** — New step `tar -czf storage.tar.gz -C storage .` (contents only) attached to the release, plus a `storage` entry in the generated `registry-index.json` `jq` block (the index is generated, not committed)

@@ -99,10 +99,13 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+      - name: Build storage archive
+        run: tar -czf storage.tar.gz -C storage .
       - name: Generate registry-index.json
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          STORAGE_SHA=$(sha256sum storage.tar.gz | cut -d' ' -f1)
 
           # Build sha256 maps per target
           declare -A HEAD_SHA
@@ -135,6 +138,7 @@ jobs:
             --arg deploy_x86 "$(jq -R -s '.' <<<"${DEPLOY_SHA[x86_64-unknown-linux-musl]}")" \
             --arg deploy_arm "$(jq -R -s '.' <<<"${DEPLOY_SHA[armv6-unknown-linux-gnueabihf]}")" \
             --arg deploy_aarch64 "$(jq -R -s '.' <<<"${DEPLOY_SHA[aarch64-unknown-linux-musl]}")" \
+            --arg storage_sha "$STORAGE_SHA" \
             '{
               registry_version: 1,
               updated: $ts,
@@ -154,6 +158,14 @@ jobs:
                     url: ($base + "/octx-aarch64-unknown-linux-musl.gz"),
                     sha256: $head_aarch64
                   }
+                }
+              },
+              storage: {
+                version: $version,
+                etag: ("\"" + ($storage_sha | .[0:16]) + "\""),
+                download: {
+                  url: ($base + "/storage.tar.gz"),
+                  sha256: $storage_sha
                 }
               },
               arms: {
@@ -241,6 +253,7 @@ jobs:
             artifacts/artifacts-aarch64-unknown-linux-musl/*.gz
             artifacts/artifacts-aarch64-unknown-linux-musl/*.sha256
             registry-index.json
+            storage.tar.gz
           body: |
             ## octx ${{ github.ref_name }}
 

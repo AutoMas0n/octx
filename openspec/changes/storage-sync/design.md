@@ -1,8 +1,8 @@
 ## Context
 
-See proposal.md for motivation. The octx head currently fetches, verifies, and installs compiled arm binaries from a registry index. The download/verify/extract machinery exists in `src/install.rs` and `src/util.rs`, with ETag caching in `src/update.rs`. Storage sync is the same pattern applied to a tarball of non-binary assets instead of a single gzipped binary.
+See proposal.md for motivation. The octx head currently fetches, verifies, and installs compiled arm binaries from a registry index. Binary download/verify/install machinery lives in `src/install.rs` and `src/util.rs`, and the 304-aware cache pattern lives in `RegistryIndex::fetch`. Storage sync applies the same idea to a tarball of non-binary assets instead of a single gzipped binary — but its ETag path is built in `src/sync.rs`, because `install::fetch` errors on `304` (it carries no cached body).
 
-No new external dependencies are needed — the head already has tokio, reqwest, sha2, serde, fs2, and the temp-file/rename pattern used by install.
+Two new dependencies are needed for archive extraction — `flate2` (gzip) and `tar` — chosen over shelling out to the system `tar` so the head stays self-contained and portable (the codebase carries Windows paths in `paths.rs`) and does not depend on `PATH`. Everything else (tokio, reqwest, sha2, serde, fs2) and the temp-file/rename pattern are already present.
 
 ## Goals / Non-Goals
 
@@ -23,17 +23,20 @@ No new external dependencies are needed — the head already has tokio, reqwest,
 ## Decisions
 
 ### Decision: Storage is a canonical read-only mirror, not a user workspace
-`{data_dir}/octx/storage/` is octx-owned and replaced wholesale. Sync does not merge, back up, or detect local modifications — anything absent from the archive is dropped. This follows the project's separation principle: an arm is the execution contract, while harnesses are independently-authored content, so user-authored copies live under `{config_dir}/harnesses/` or a `--local-dir`, never in the mirror. Alternatives: preserving/merging local edits (rejected — that is a full package manager, out of scope for this change), or a read-only mount (overkill). Version tracking stays simple: a manifest-recorded version/etag, the mirror reflecting only the current release, no per-file history or pinning.
+`{data_dir}/octx/storage/` is octx-owned and replaced wholesale. Sync does not merge, back up, or detect local modifications — anything absent from the archive is dropped. This follows the project's separation principle: an arm is the execution contract, while harnesses are independently-authored content, so user-authored copies live under `{config_dir}/harnesses/` or a `--local-dir`, never in the mirror. Alternatives: preserving/merging local edits (rejected — that is a full package manager, out of scope for this change), or a read-only mount (overkill). Version tracking stays simple: the only recorded state is the cached archive and its ETag file (`storage.tar.gz` / `storage.tar.gz.etag`), the mirror reflecting only the current release, with no per-file history or pinning. The installed manifest is deliberately not involved — keeping the recorded state in one place avoids a second ETag copy that could diverge.
 
 ### Decision: Storage is a registry entry, not a separate index
-The `storage` entry lives in `registry-index.json` alongside `head` and `arms`, using the same version/etag/downloads/sha256 structure. This reuses the existing fetch-with-cache machinery and avoids a second HTTP request to a different URL.
+The `storage` entry lives in `registry-index.json` alongside `head` and `arms`, avoiding a second HTTP request to a different URL. Unlike `head` and `arms`, it is **not** keyed by platform: the archive is a single platform-independent tarball, so the entry carries a top-level `version` and `etag` plus one `download` (`url` + `sha256`). The entry is emitted by the `jq` generator in `.github/workflows/release.yml` — the index is a generated release asset and is never committed.
 
-### Decision: Reuse `fetch_with_cache` from install.rs
-The existing `fetch_with_cache(url, cache_path)` function handles ETag conditional requests, streaming to a temp file, and atomic rename. Storage sync calls it with the archive URL and a `{data_dir}/octx/storage.tar.gz` cache path. This keeps the sync module small.
+### Decision: `src/sync.rs` performs its own conditional GET
+`install::fetch` accepts an ETag path but returns an error on `304 Not Modified` and exposes no cached body, so it cannot back an ETag-cached download. `src/sync.rs` therefore issues its own conditional request: it sends `If-None-Match` with the stored ETag (`{data_dir}/octx/storage.tar.gz.etag`), and on `304` reports that storage is current and skips extraction. On `200` it streams the archive to `{data_dir}/octx/storage.tar.gz`, saves the new ETag, verifies SHA256, and extracts. Duplicating the small conditional-request path here is cheaper than reshaping `install::fetch`, which is typed for single-binary installs.
+
+### Decision: Extraction uses the `tar` and `flate2` crates
+`.tar.gz` extraction uses the `tar` and `flate2` crates rather than shelling out to the system `tar`. This keeps the head self-contained and portable (the codebase carries Windows paths), and removes any runtime dependency on `tar` being installed and on `PATH`. This is the one place storage-sync adds dependencies.
 
 ### Decision: Atomic extraction via temp dir + rename
 1. Download to `{data_dir}/octx/storage.tar.gz` (cached, ETag-checked)
-2. If new content was downloaded, extract to `{data_dir}/octx/.storage.tmp/`
+2. If new content was downloaded, unpack (`flate2::read::GzDecoder` + `tar::Archive`) into `{data_dir}/octx/.storage.tmp/`
 3. Rename `{data_dir}/octx/storage/` → `{data_dir}/octx/.storage.old/` (if exists)
 4. Rename `{data_dir}/octx/.storage.tmp/` → `{data_dir}/octx/storage/`
 5. Remove `{data_dir}/octx/.storage.old/`
@@ -48,7 +51,7 @@ The same file lock at `{data_dir}/octx/update.lock` serializes both `octx sync` 
 If the storage sync fails during `octx update`, the error is printed to stderr but the update continues to its later phases (self-update). This follows the principle that a stale storage directory is better than no update at all.
 
 ### Decision: Release pipeline builds `storage.tar.gz` from `storage/` dir contents
-A step in `.github/workflows/release.yml` runs `tar -czf storage.tar.gz -C storage .` from the repo root (note `-C storage .` archives the **contents**, so top-level entries like `harnesses/` land at the archive root) and attaches it to the release. This matches the extraction target `{data_dir}/octx/storage/` — without `-C storage .`, extraction would double-nest into `{data_dir}/octx/storage/storage/`. The `registry-index.json` is updated with the archive URL, checksum, and version (same as the head version).
+A step in `.github/workflows/release.yml` runs `tar -czf storage.tar.gz -C storage .` from the repo root (note `-C storage .` archives the **contents**, so top-level entries like `harnesses/` land at the archive root) and attaches it to the release. This matches the extraction target `{data_dir}/octx/storage/` — without `-C storage .`, extraction would double-nest into `{data_dir}/octx/storage/storage/`. A tracked `storage/.gitkeep` guarantees the directory exists in a fresh checkout so the `tar` step always has a source; until harness content lands, `.gitkeep` is also the archive's only entry. The generated `registry-index.json` gains a `storage` entry with the archive URL, checksum, and version (the same version as the head).
 
 ## Risks / Trade-offs
 

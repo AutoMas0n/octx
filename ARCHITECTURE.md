@@ -309,6 +309,14 @@ registry_url = "https://my-mirror.example.com/registry-index.json"
       }
     }
   },
+  "storage": {
+    "version": "0.1.0",
+    "etag": "\"abc123def\"",
+    "download": {
+      "url": "https://github.com/AutoMas0n/octx/releases/download/v0.1.0/storage.tar.gz",
+      "sha256": "abc123..."
+    }
+  },
   "arms": {
     "fmt": {
       "description": "Opinionated code formatter",

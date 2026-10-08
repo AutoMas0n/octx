@@ -10,6 +10,7 @@ pub mod paths;
 pub mod platform;
 pub mod registry;
 pub mod skills;
+pub mod sync;
 pub mod update;
 pub mod util;
 

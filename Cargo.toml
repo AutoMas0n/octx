@@ -3,7 +3,7 @@ members = ["arms/*"]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 
 [workspace.dependencies]
@@ -28,6 +28,8 @@ semver = "1.0"
 dirs = "6"
 chrono = "0.4"
 hex = "0.4"
+flate2 = "1"
+tar = "0.4"
 fs2 = "0.4"
 toml = "0.8"
 aes-gcm = "0.10"

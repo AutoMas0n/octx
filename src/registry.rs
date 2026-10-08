@@ -14,6 +14,9 @@ pub struct RegistryIndex {
     pub registry_version: u32,
     pub updated: String,
     pub head: Option<HeadEntry>,
+    /// Optional storage archive entry. Absent in indexes that predate storage.
+    #[serde(default)]
+    pub storage: Option<StorageEntry>,
     pub arms: HashMap<String, ArmIndexEntry>,
 }
 
@@ -38,6 +41,16 @@ pub struct ArmIndexEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VersionEntry {
     pub downloads: HashMap<String, DownloadEntry>,
+}
+
+/// Entry for the storage archive (non-binary assets: harness YAML, scripts, templates).
+/// Unlike `HeadEntry`, this is not keyed by platform — a single archive is shared
+/// across every target.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageEntry {
+    pub version: String,
+    pub etag: Option<String>,
+    pub download: DownloadEntry,
 }
 
 /// A download entry with URL and SHA-256 checksum.
@@ -132,6 +145,18 @@ impl RegistryIndex {
         ))
     }
 
+    /// Resolve the storage archive download URL + checksum + version.
+    /// The archive is platform-independent, so no target is required.
+    /// Returns None when the index has no storage entry.
+    pub fn resolve_storage(&self) -> Option<(&str, &str, &str)> {
+        let storage = self.storage.as_ref()?;
+        Some((
+            storage.download.url.as_str(),
+            storage.download.sha256.as_str(),
+            storage.version.as_str(),
+        ))
+    }
+
     /// Search arms by keyword (name or description contains query, case-insensitive).
     /// Returns up to 20 matches as (name, description) pairs.
     pub fn search(&self, query: &str) -> Vec<(&str, &str)> {
@@ -178,6 +203,14 @@ mod tests {
         RegistryIndex {
             registry_version: 1,
             updated: "2025-01-01T00:00:00Z".into(),
+            storage: Some(StorageEntry {
+                version: "0.2.0".into(),
+                etag: Some("\"storageetag\"".into()),
+                download: DownloadEntry {
+                    url: "https://example.com/storage.tar.gz".into(),
+                    sha256: "storage123".into(),
+                },
+            }),
             head: Some(HeadEntry {
                 version: "0.2.0".into(),
                 etag: None,
@@ -326,6 +359,22 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_storage_returns_url_sha_and_version() {
+        let idx = test_index();
+        let (url, sha, version) = idx.resolve_storage().expect("should resolve storage entry");
+        assert_eq!(url, "https://example.com/storage.tar.gz");
+        assert_eq!(sha, "storage123");
+        assert_eq!(version, "0.2.0");
+    }
+
+    #[test]
+    fn test_resolve_storage_returns_none_when_absent() {
+        let mut idx = test_index();
+        idx.storage = None;
+        assert!(idx.resolve_storage().is_none());
+    }
+
+    #[test]
     fn test_resolve_arm_picks_latest_version() {
         let idx = test_index();
         // deploy has 0.1.0 and 0.2.0 — should pick 0.2.0
@@ -395,6 +444,7 @@ mod tests {
         let idx = RegistryIndex {
             registry_version: 1,
             updated: "2025-01-01T00:00:00Z".into(),
+            storage: None,
             head: None,
             arms,
         };

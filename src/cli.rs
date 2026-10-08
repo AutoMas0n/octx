@@ -54,6 +54,13 @@ pub enum Command {
     /// Update all installed arms, sync skills, and update octx itself.
     Update,
 
+    /// Sync storage assets (harness YAML, scripts) from the release.
+    Sync {
+        /// Re-download and re-extract even if the ETag matches
+        #[arg(long)]
+        force: bool,
+    },
+
     /// List installed arms.
     #[command(aliases = &["list", "l"])]
     Ls,
@@ -134,6 +141,7 @@ pub async fn run() -> Result<(), OctxError> {
         }
         Command::Uninstall { name } => uninstall_arm(&name),
         Command::Update => crate::update::run().await,
+        Command::Sync { force } => crate::sync::run(force).await,
         Command::Ls => list_arms(),
         Command::Search { query } => search_registry(&query).await,
         Command::Init => crate::init::install_path_hook(),
@@ -408,6 +416,25 @@ mod tests {
         let args: Vec<&str> = vec!["octx", "update"];
         let cli = Cli::try_parse_from(args).expect("should parse update");
         assert!(matches!(cli.command, Command::Update));
+    }
+
+    #[test]
+    fn test_cli_sync_parses_without_force() {
+        let cli = Cli::try_parse_from(vec!["octx", "sync"]).expect("should parse sync");
+        match cli.command {
+            Command::Sync { force } => assert!(!force),
+            other => panic!("expected Command::Sync, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_cli_sync_parses_with_force() {
+        let cli = Cli::try_parse_from(vec!["octx", "sync", "--force"])
+            .expect("should parse sync --force");
+        match cli.command {
+            Command::Sync { force } => assert!(force),
+            other => panic!("expected Command::Sync, got {other:?}"),
+        }
     }
 
     #[test]
