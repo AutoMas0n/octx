@@ -54,14 +54,16 @@ jobs:
               sudo apt-get install -y musl-tools
               ;;
             arm-unknown-linux-gnueabihf)
-              sudo apt-get install -y gcc-arm-linux-gnueabihf
+              sudo apt-get install -y gcc-arm-linux-gnueabihf lld
               echo "CC_arm_unknown_linux_gnueabihf=arm-linux-gnueabihf-gcc" >> "$GITHUB_ENV"
               echo "AR_arm_unknown_linux_gnueabihf=arm-linux-gnueabihf-ar" >> "$GITHUB_ENV"
+              echo "CARGO_TARGET_ARM_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc" >> "$GITHUB_ENV"
               ;;
             aarch64-unknown-linux-musl)
-              sudo apt-get install -y gcc-aarch64-linux-gnu musl-tools
+              sudo apt-get install -y gcc-aarch64-linux-gnu musl-tools lld
               echo "CC_aarch64_unknown_linux_musl=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
               echo "AR_aarch64_unknown_linux_musl=aarch64-linux-gnu-ar" >> "$GITHUB_ENV"
+              echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
               ;;
           esac
       - name: Build head
