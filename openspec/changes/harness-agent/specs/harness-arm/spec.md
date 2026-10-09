@@ -6,33 +6,35 @@ Resolves a harness name to a YAML definition file, merges its defaults with CLI 
 
 ### Requirement: Resolve a harness name to a definition file
 The harness arm SHALL resolve a harness name to a `harness.yaml` file by checking the following locations in order, using the first match:
-1. `--local-dir <path>` flag — overrides all other resolution, uses exactly the given path
-2. `{config_dir}/harnesses/<name>/harness.yaml` — user-authored harnesses, freely editable in place
-3. `{data_dir}/octx/storage/harnesses/<name>/harness.yaml` — the canonical read-only mirror synced from the repo release
-
-Layer 3 is a read-only canonical mirror owned by `octx sync` and replaced wholesale; users MUST NOT edit it, and its contents may be dropped on the next sync. User-authored or modified harnesses belong in layer 2 or a `--local-dir`. A user copy in layer 2 SHALL shadow a released harness of the same name in layer 3.
-
-If no matching file is found, the harness arm SHALL exit non-zero with a message explaining that the harness was not found and suggesting the user run `octx sync` (or provide `--local-dir` / place a copy in `{config_dir}/harnesses/`).
+1. `--local-dir <path>` — overrides all other resolution and uses exactly the given path
+2. `{config_dir}/octx/harnesses/<name>/harness.yaml` — user-authored harnesses
+3. `{data_dir}/octx/storage/harnesses/<name>/harness.yaml` — the released mirror
 
 #### Scenario: Resolve from local dir
 - **WHEN** the user runs `octx x harness develop-arm --local-dir ./my-harness/`
 - **THEN** the harness arm reads `./my-harness/harness.yaml`
 
 #### Scenario: Resolve from the user harness directory
-- **WHEN** the user runs `octx x harness my-harness` and `{config_dir}/harnesses/my-harness/harness.yaml` exists
+- **WHEN** the user runs `octx x harness my-harness` and `{config_dir}/octx/harnesses/my-harness/harness.yaml` exists
 - **THEN** the harness arm reads that file
-
-#### Scenario: User copy shadows the released mirror
-- **WHEN** both `{config_dir}/harnesses/develop-arm/harness.yaml` and `{data_dir}/octx/storage/harnesses/develop-arm/harness.yaml` exist
-- **THEN** the harness arm uses the `{config_dir}` copy
 
 #### Scenario: Resolve from storage
 - **WHEN** the user runs `octx x harness develop-arm` and only `{data_dir}/octx/storage/harnesses/develop-arm/harness.yaml` exists
 - **THEN** the harness arm reads that file
 
+### Requirement: User copies shadow the read-only mirror
+Layer 3 (`{data_dir}/octx/storage/harnesses/`) SHALL be a read-only canonical mirror owned by `octx sync` and replaced wholesale; users MUST NOT edit it and its contents may be dropped on the next sync. User-authored or modified harnesses SHALL live in `{config_dir}/octx/harnesses/` or a `--local-dir`, and a layer-2 copy SHALL shadow a released harness of the same name in layer 3.
+
+#### Scenario: User copy shadows the released mirror
+- **WHEN** both `{config_dir}/octx/harnesses/develop-arm/harness.yaml` and `{data_dir}/octx/storage/harnesses/develop-arm/harness.yaml` exist
+- **THEN** the harness arm uses the `{config_dir}` copy
+
+### Requirement: Harness not found error
+When no matching file is found in any layer, the harness arm SHALL exit non-zero with a message explaining that the harness was not found and suggesting the user run `octx sync`, provide `--local-dir`, or place a copy in `{config_dir}/octx/harnesses/`.
+
 #### Scenario: Harness not found
 - **WHEN** the user runs `octx x harness nonexistent` and no matching file is found in any layer
-- **THEN** the harness arm exits non-zero with a message suggesting `octx sync`, `--local-dir`, or placing a copy in `{config_dir}/harnesses/`
+- **THEN** the harness arm exits non-zero with a message suggesting `octx sync`, `--local-dir`, or placing a copy in `{config_dir}/octx/harnesses/`
 
 ### Requirement: Parse harness YAML schema
 The harness arm SHALL parse a `harness.yaml` file with the following schema:
@@ -97,7 +99,7 @@ The `script.path` in the harness YAML SHALL be resolved relative to the director
 - **THEN** the agent arm receives `--script {storage}/harnesses/develop-arm/script.py`
 
 ### Requirement: Help text
-The harness arm SHALL produce a `--help` output listing the resolved harness's description, defaults, and available CLI flags. If no harness name is provided, the harness arm SHALL list all available harnesses discovered across the user harness directory (`{config_dir}/harnesses/`), the storage mirror (`{data_dir}/octx/storage/harnesses/`), and any `--local-dir`, de-duplicated by name.
+The harness arm SHALL produce a `--help` output listing the resolved harness's description, defaults, and available CLI flags. If no harness name is provided, the harness arm SHALL list all available harnesses discovered across the user harness directory (`{config_dir}/octx/harnesses/`), the storage mirror (`{data_dir}/octx/storage/harnesses/`), and any `--local-dir`, de-duplicated by name.
 
 #### Scenario: List harnesses
 - **WHEN** the user runs `octx x harness` without a name

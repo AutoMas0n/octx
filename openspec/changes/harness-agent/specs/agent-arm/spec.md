@@ -5,7 +5,7 @@ Runs any ACP-compatible AI agent headlessly: launches the agent subprocess, mana
 ## ADDED Requirements
 
 ### Requirement: Launch an ACP agent subprocess
-The agent arm SHALL launch an ACP agent as a subprocess over stdio (JSON-RPC 2.0). The agent command SHALL be selectable by ID from a built-in registry (pi, claude, codex, gemini) or by an explicit `--agent-command` override. The agent arm SHALL perform ACP initialization (`initialize`), and if the agent requires authentication (`authMethods` non-empty), the agent arm SHALL either perform `auth/login` if credentials are available or fail with a clear error.
+The agent arm SHALL launch an ACP agent as a subprocess over stdio (JSON-RPC 2.0). The agent command SHALL be selectable by ID from a built-in registry (pi, claude, codex, gemini) or by an explicit `--agent-command` override. The agent arm SHALL perform ACP initialization (`initialize`).
 
 #### Scenario: Launch pi via built-in registry
 - **WHEN** the user runs the agent arm with `--agent pi`
@@ -15,9 +15,16 @@ The agent arm SHALL launch an ACP agent as a subprocess over stdio (JSON-RPC 2.0
 - **WHEN** the user runs the agent arm with `--agent-command "my-agent --acp"` and no built-in agent ID
 - **THEN** the custom command is launched as the ACP subprocess
 
+### Requirement: Authenticate with the agent
+When the agent advertises `agent`-type auth methods, the agent arm SHALL perform `authenticate` if credentials are available for one of them, or exit non-zero naming the credentials needed. Terminal-type auth methods require an interactive login the headless arm cannot perform, so when only terminal methods are advertised the agent arm SHALL warn and continue rather than fail.
+
 #### Scenario: Agent requires auth but none available
-- **WHEN** the launched agent advertises auth methods and no credentials are configured
+- **WHEN** the launched agent advertises an `agent`-type auth method and no credentials are configured
 - **THEN** the agent arm exits non-zero with an error explaining which credentials are needed
+
+#### Scenario: Agent advertises only terminal auth
+- **WHEN** the launched agent advertises only terminal-type auth methods (e.g. `pi_terminal_login`)
+- **THEN** the agent arm warns and continues, so an already-authenticated agent can run headlessly
 
 ### Requirement: Manage sessions
 The agent arm SHALL create a new session (`session/new`) for each run by default, and SHALL support resuming an existing session via `--session <id>` when the agent supports session resume. Sessions SHALL be closed cleanly on exit.
@@ -29,6 +36,17 @@ The agent arm SHALL create a new session (`session/new`) for each run by default
 #### Scenario: Resume an existing session
 - **WHEN** the user runs the agent arm with `--session <id>`
 - **THEN** the agent resumes that session instead of creating a new one
+
+### Requirement: Set the working directory
+The agent arm SHALL accept `--cwd <path>` and use it as the ACP session working directory and as the base directory for the tool execution plane. Filesystem tool requests SHALL be confined to that directory; a request for a path outside it SHALL be rejected and returned to the agent as an error.
+
+#### Scenario: Working directory applied to the session
+- **WHEN** the user runs the agent arm with `--cwd /tmp/work`
+- **THEN** the ACP session is created with `/tmp/work` as its working directory
+
+#### Scenario: Filesystem request escapes the working directory
+- **WHEN** the agent calls `fs/read_text_file` or `fs/write_text_file` with a path outside the working directory
+- **THEN** the agent arm rejects the request and returns an error to the agent instead of accessing the file
 
 ### Requirement: Configure session model and options
 The agent arm SHALL apply session configuration options passed via CLI: `--model <id>` and `--provider <name>`. When the agent advertises `sessionConfigOptions`, the agent arm SHALL set them via `session/config_option`. Unsupported options SHALL be reported as warnings, not fatal errors.
@@ -59,6 +77,14 @@ The agent arm SHALL create a Unix socket at a path (default `{tmpdir}/octx-agent
 #### Scenario: Script sets a session config option
 - **WHEN** the orchestration script sends `{"type":"set_config","option":"model","value":"claude-sonnet-4"}`
 - **THEN** the agent arm applies the option to the active session when the agent advertises it, and warns without failing when it does not
+
+#### Scenario: Script observes the session-ready event
+- **WHEN** the orchestration script connects after the ACP session has been created
+- **THEN** the agent arm sends `{"type":"ready","session_id":...}` before any prompt is sent
+
+#### Scenario: Unknown ACP event is ignored
+- **WHEN** the agent emits an ACP event the agent arm does not recognise
+- **THEN** the agent arm ignores it and the run continues rather than failing
 
 ### Requirement: Execute tools on behalf of the agent
 When the agent requests tool execution, the agent arm SHALL execute supported tools and return results to the agent. The agent arm SHALL support the ACP terminal surface (`terminal/create` — bash, python, or arbitrary commands) and the filesystem surface (`fs/read_text_file`, `fs/write_text_file`) when the agent uses them.

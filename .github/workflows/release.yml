@@ -2,10 +2,10 @@ name: CI/CD
 
 on:
   push:
-    branches: [main]
+    branches: [master]
     tags: ['v*']
   pull_request:
-    branches: [main]
+    branches: [master]
   schedule:
     - cron: '0 0 * * 0'  # weekly Sunday midnight
 
@@ -21,7 +21,7 @@ jobs:
       - run: cargo fmt --check
 
   audit:
-    if: github.event_name == 'schedule' || github.ref == 'refs/heads/main'
+    if: github.event_name == 'schedule' || github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -99,7 +99,7 @@ jobs:
         run: cargo build --target ${{ matrix.target }} --release
       - name: Build arms
         run: |
-          for arm in octx-fmt octx-parse octx-deploy; do
+          for arm in octx-fmt octx-parse octx-deploy octx-agent octx-harness; do
             cargo build -p "$arm" --target ${{ matrix.target }} --release
           done
       - name: Prepare artifacts
@@ -110,7 +110,7 @@ jobs:
           gzip -c octx > "artifacts/octx-${{ matrix.target }}.gz"
           sha256sum "artifacts/octx-${{ matrix.target }}.gz" | cut -d' ' -f1 > "artifacts/octx-${{ matrix.target }}.gz.sha256"
           # Arms
-          for arm in fmt parse deploy; do
+          for arm in fmt parse deploy agent harness; do
             cp "target/${{ matrix.target }}/release/$arm" "$arm"
             gzip -c "$arm" > "artifacts/$arm-${{ matrix.target }}.gz"
             sha256sum "artifacts/$arm-${{ matrix.target }}.gz" | cut -d' ' -f1 > "artifacts/$arm-${{ matrix.target }}.gz.sha256"
@@ -183,7 +183,9 @@ jobs:
             def arm_descriptions:
               { fmt: "Opinionated code formatter",
                 parse: "File parser",
-                deploy: "Deployment tool" };
+                deploy: "Deployment tool",
+                agent: "Headless ACP agent runner with a tool plane and script socket",
+                harness: "Resolves harness definitions and dispatches them to the agent arm" };
 
             {
               registry_version: 1,

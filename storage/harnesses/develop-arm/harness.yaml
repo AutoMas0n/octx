@@ -1,0 +1,15 @@
+schema: 1
+name: develop-arm
+description: Drive a headless ACP agent to develop, review, or modify an arm.
+agent: pi
+defaults:
+  # model: claude-sonnet-4   # uncomment/override with --model to pin a model
+  permission_mode: approve-reads
+  timeout: 600
+  max_turns: 20
+  format: quiet   # the script owns stdout; events reach it over the socket
+  cwd: ./
+script:
+  path: script.py
+  args: []
+  env: {}
