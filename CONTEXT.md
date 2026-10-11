@@ -22,6 +22,7 @@ octx/
 │   └── deploy/
 ├── registry-index.json     # Published with releases (registry manifest)
 ├── install.sh              # One-liner installer script
+├── SKILL-CONTRACT.md       # What every arm's skill.md must contain
 ├── CONTEXT.md              # ← you are here
 ├── AGENTS.md               # Project-specific preferences
 ├── ARCHITECTURE.md          # Design reference (read only when needed)
@@ -166,7 +167,7 @@ noninteractive = false
 }
 ```
 
-Encrypted at `{config_dir}/octx/creds.enc` using machine-ID derived key (argon2 + AES-256-GCM).
+Encrypted at `{config_dir}/octx/creds.enc` using a machine-ID derived key (argon2 + AES-256-GCM). The implementation lives in the shared `octx-creds` library (`crates/octx-creds`), which the head and every arm link — no component reimplements the crypto.
 
 ## Arm contract
 
@@ -176,7 +177,13 @@ Every arm is a standalone binary:
 - Exits 0 on success, non-zero on failure
 - stdout = output, stderr = diagnostics
 - Input from stdin (for pipelines)
-- Can receive tokens via `OCTX_TOKEN_<HOST>` env vars (injected by the head)
+- Obtains credentials from the shared `octx-creds` library; never receives secrets through the environment
+
+### Skill contract
+
+Every arm ships a `skill.md` conforming to [SKILL-CONTRACT.md](SKILL-CONTRACT.md): an `# <arm-name>` heading followed by exactly seven sections — Description, Usage, Options, Examples, Credentials, Prerequisites, Failure modes — in that order. Credentials are named by host (`octx creds add <host>`), never by environment variable.
+
+Conformance is enforced by `tests/skill_conformance.rs`, which runs as part of `cargo test`, and by a release gate that fails when a shipped arm has no skill.
 
 ## Code quality
 

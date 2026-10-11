@@ -87,7 +87,7 @@ Potential modes:
 - `extract` — structured JSON extraction ("extract all URLs from this text")
 - `summarize` — shrink long text to a configurable max length
 
-The arm could support any provider OpenAI, Anthropic, Ollama (local) — via `--model` or `OCTX_LLM_API_KEY` and `OCTX_LLM_BASE_URL` env vars (harness reads creds from octx's encrypted store like all other arms).
+The arm could support any provider OpenAI, Anthropic, Ollama (local) — via `--model`, with any provider key read from the shared `octx-creds` library by host (`octx creds add <host>`), like every other arm.
 
 ---
 
@@ -113,5 +113,5 @@ All arms should:
 - Accept `--help` and `--version` (free with clap if Rust, argparse if Python)
 - Exit 0 on success, non-zero on failure
 - Write output to stdout, diagnostics to stderr
-- Read `OCTX_TOKEN_*` env vars for auth (injected by the head's encrypted creds store)
-- Ship with a `skill.md` so Pi / Claude can discover and use them naturally
+- Obtain credentials from the shared `octx-creds` library by host — never through the environment
+- Ship with a `skill.md` conforming to `SKILL-CONTRACT.md`, so Pi / Claude can discover and use them naturally

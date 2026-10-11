@@ -195,6 +195,7 @@ octx init                    # → shell integration (PATH, one-time)
 octx creds add <host>        # → store auth token (e.g. github)
 octx creds remove <host>
 octx creds list
+octx creds reset             # → move an unreadable store aside (never deletes it)
 octx link <path>              # → register an agent skills directory (e.g. ~/.claude/skills)
 octx link <path> --unlink    # → remove a registered link
 octx links                   # → list all registered agent links
@@ -226,7 +227,7 @@ src/
 │   ├── detect_shell()       # From $SHELL env var
 │   ├── rc_file_path()       # .bashrc / .zshrc / config.fish / $PROFILE
 │   └── install_path_hook()  # Append `{data_dir}/octx/bin` to shell rc
-├── creds.rs                 # Auth token storage
+├── creds.rs                 # Thin CLI glue over the octx-creds library
 │   ├── add(host, token)     # Encrypt + store in {config_dir}/octx/creds.enc
 │   ├── get(host)            # Retrieve token
 │   └── remove(host)
@@ -266,13 +267,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 dirs = "6"
-machine-uid = "0.2"
 fs2 = "0.4"
-aes-gcm = "0.10"
-argon2 = "0.5"
+octx-creds = { path = "crates/octx-creds" }
 ```
 
-Tokio + reqwest (rustls). `dirs` for cross-platform paths. `machine-uid` + `argon2` + `aes-gcm` for encrypted creds. `fs2` for file locking. No openssl-sys.
+Tokio + reqwest (rustls). `dirs` for cross-platform paths. `fs2` for file locking. Encrypted credentials come from the shared `octx-creds` crate (argon2 + AES-256-GCM behind `secrecy`/`zeroize`). No openssl-sys.
 
 ---
 
@@ -414,7 +413,7 @@ If the arm repo is private, `octx creds get github` provides a token. The head s
 
 1. **Encrypted at rest** — machine-ID derived key, not plaintext
 2. **Portable** — works on Pi Zero (headless), containers, desktop, CI (no keyring daemon needed)
-3. **Reusable by arms** — any arm reads tokens via `OCTX_TOKEN_<HOST>` env var
+3. **Reusable by arms** — any arm retrieves the host it needs through the shared `octx-creds` library
 4. **Centralized** — one place for all auth tokens, shared across the whole tool suite
 
 ### 8.2 Encryption strategy
@@ -472,35 +471,51 @@ octx creds remove github
 octx creds list                # shows hosts only, never tokens
 octx creds get github          # prints token to stdout (for scripts)
 octx creds get github --raw    # decrypt and print secret plaintext
+octx creds reset               # move an unreadable store aside (never deletes it)
 ```
+
+The store is encrypted with a key derived from the machine identity, so a
+`creds.enc` copied from another machine cannot be decrypted here. Every
+command that needs the store then fails with the file path and the remedy
+(`octx creds reset`), and **nothing is ever discarded automatically** —
+`reset` renames the file to `creds.enc.bak` (or the next free
+`creds.enc.bak.N`) so it can be inspected or restored.
 
 ### 8.5 Arms reusing creds
 
-The head injects tokens as environment variables when spawning an arm:
+The head does **not** inject credentials into an arm's environment. Instead the
+head and every arm call the shared `octx-creds` library (`crates/octx-creds`),
+naming exactly the host they need:
 
 ```rust
-// In dispatch.rs::execute()
-if let Ok(token) = creds::get(&host) {
-    cmd.env(format!("OCTX_TOKEN_{}", host.to_uppercase().replace('.', "_")), &token);
-}
+// in the head or an arm
+let store = octx_creds::Store::open_default()?;
+let secret = store.get("github")?;   // redacted, zeroized handle
+let header = secret.bearer()?;        // Authorization: Bearer <token>
 ```
 
-Arms simply read the env var — no credential logic needed in the arm:
+A retrieved credential is a `Secret` that redacts itself when formatted, is not
+serializable, and zeroes its memory on drop. There is no bulk value export and
+no environment or argv path. An arm that must hand a credential to a spawned
+subprocess does so explicitly, and only for the hosts it was configured to
+delegate (the agent arm's `--credential-host`).
 
-```rust
-let token = std::env::var("OCTX_TOKEN_GITHUB").ok();
-```
-
-This makes creds **centralized and reusable** across all tools.
+This makes creds **centralized and reusable** across all tools without a leaky
+channel.
 
 ### 8.6 Dependencies
 
-Uses `machine-uid` crate for reading the machine ID. Argon2 + AES-256-GCM from `aes-gcm` and `argon2` crates.
+The implementation lives in the `octx-creds` workspace crate. It resolves the
+machine ID itself (machine-id files, `getprop` on Android, `ioreg` on macOS, a
+boot-id fallback) and uses `aes-gcm` + `argon2` for encryption, `secrecy` +
+`zeroize` for redacted, zeroized handles, and `http` for the header helper.
 
 ```toml
-machine-uid = "0.2"
 aes-gcm = "0.10"
 argon2 = "0.5"
+secrecy = "0.10"
+zeroize = "1"
+```
 
 ---
 
@@ -528,7 +543,7 @@ octx x fmt [files...] [--check]
 - `octx x fmt --check src/` — check if files are formatted (exit 1 if not)
 
 ## Environment
-- `OCTX_TOKEN_GITHUB` — injected when arm is spawned via `octx x`
+- `OCTX_TOKEN_GITHUB` — replaced by library access: the arm fetches the host it needs from the shared `octx-creds` library (never injected into the environment)
 ```
 
 ### 9.2 `octx link <path>` — Registering agent directories
