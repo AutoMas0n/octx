@@ -90,6 +90,8 @@ mod tests {
 
     #[test]
     fn test_load_returns_empty_manifest_when_no_file() {
+        // Own data dir: the real one may hold installed arms.
+        let _dir = crate::paths::TestDataDir::new("manifest-empty");
         let manifest = Manifest::load().expect("load should succeed without a file");
         assert_eq!(manifest.version, 1);
         assert!(manifest.arms.is_empty());
@@ -196,6 +198,9 @@ mod tests {
 
     #[test]
     fn test_save_and_load_roundtrip_maintains_data() {
+        // Own data dir: without it this test writes to, and then deletes,
+        // the user's real installed-manifest.json.
+        let dir = crate::paths::TestDataDir::new("manifest-roundtrip");
         let mut manifest = Manifest {
             version: 1,
             arms: HashMap::new(),
@@ -211,6 +216,11 @@ mod tests {
             },
         );
         manifest.save().expect("save should succeed");
+        assert!(
+            Manifest::path().starts_with(dir.path()),
+            "the manifest must be written under the test data dir: {:?}",
+            Manifest::path()
+        );
 
         let loaded = Manifest::load().expect("load after save should succeed");
         assert_eq!(loaded.version, 1);
@@ -219,10 +229,6 @@ mod tests {
         assert_eq!(entry.source, "registry");
         assert_eq!(entry.version, "0.1.0");
         assert_eq!(entry.checksum.as_deref(), Some("sha256:abc"));
-
-        // Clean up
-        let path = Manifest::path();
-        let _ = fs::remove_file(&path);
     }
 
     #[test]

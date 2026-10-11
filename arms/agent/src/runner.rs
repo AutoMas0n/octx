@@ -22,6 +22,7 @@ use crate::events::Event;
 use crate::permissions;
 use crate::pi;
 use crate::tool::ToolPlane;
+use octx_creds::Secret;
 
 /// The one place the ACP protocol version is pinned (see the version-seam decision).
 const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V1;
@@ -32,6 +33,8 @@ pub struct Shared {
     pub cli: Cli,
     /// The tool execution plane.
     pub tool: ToolPlane,
+    /// Credentials delegated to the agent subprocess: (host, env name, secret).
+    pub creds: Vec<(String, String, Secret)>,
 }
 
 /// A command sent by the orchestration script over the socket.
@@ -163,7 +166,11 @@ impl Output {
 }
 
 /// Build the agent subprocess handle from the CLI.
-fn build_agent(cli: &Cli, pi_dir: Option<String>) -> anyhow::Result<AcpAgent> {
+fn build_agent(
+    cli: &Cli,
+    pi_dir: Option<String>,
+    creds: &[(String, String, Secret)],
+) -> anyhow::Result<AcpAgent> {
     let base = if let Some(command) = &cli.agent_command {
         command
             .parse::<AcpAgent>()
@@ -175,23 +182,53 @@ fn build_agent(cli: &Cli, pi_dir: Option<String>) -> anyhow::Result<AcpAgent> {
         argv.extend(args.into_iter().map(str::to_string));
         AcpAgent::from_args(argv).map_err(|e| anyhow!("failed to build agent command: {e}"))?
     };
-    Ok(match pi_dir {
-        Some(dir) => AcpAgent::new(base.into_config().env("PI_CODING_AGENT_DIR", dir)),
-        None => base,
-    })
+    let mut config = base.into_config();
+    if let Some(dir) = pi_dir {
+        config = config.env("PI_CODING_AGENT_DIR", dir);
+    }
+    // Delegate only the credentials configured for this agent, never all of them.
+    for (_, env_name, secret) in creds {
+        config = config.env(env_name.clone(), secret.expose().to_string());
+    }
+    Ok(AcpAgent::new(config))
 }
 
-fn credentials_available(method_id: &str) -> bool {
+/// The environment variable name a host's credential is delegated under.
+fn credential_env_name(host: &str) -> String {
+    format!("OCTX_TOKEN_{}", host.to_uppercase().replace('.', "_"))
+}
+
+/// Retrieve the credentials configured for this run from the shared library.
+///
+/// A host that is configured but absent from the store fails fast here, before
+/// the agent is launched, with guidance on how to add it.
+fn load_credentials(hosts: &[String]) -> anyhow::Result<Vec<(String, String, Secret)>> {
+    if hosts.is_empty() {
+        return Ok(Vec::new());
+    }
+    let store =
+        octx_creds::Store::open_default().context("cannot open the octx credential store")?;
+    let mut delegated = Vec::new();
+    for host in hosts {
+        let secret = store
+            .get(host)
+            .map_err(|error| anyhow!("cannot delegate `{host}`: {error}"))?;
+        delegated.push((host.clone(), credential_env_name(host), secret));
+    }
+    Ok(delegated)
+}
+
+/// Whether a delegated credential satisfies the given auth method id.
+fn credentials_available(creds: &[(String, String, Secret)], method_id: &str) -> bool {
     let key = method_id.to_ascii_uppercase().replace(['-', ' '], "_");
     let candidates = [
         format!("OCTX_TOKEN_{key}"),
         format!("{key}_API_KEY"),
         format!("{key}_TOKEN"),
     ];
-    candidates
+    creds
         .iter()
-        .any(|name| std::env::var(name).map(|v| !v.is_empty()).unwrap_or(false))
-        || std::env::vars().any(|(k, v)| k.starts_with("OCTX_TOKEN_") && !v.is_empty())
+        .any(|(_, env_name, _)| candidates.contains(env_name))
 }
 
 fn stop_reason_name(reason: &agent_client_protocol::schema::v1::StopReason) -> String {
@@ -211,17 +248,19 @@ fn stop_reason_name(reason: &agent_client_protocol::schema::v1::StopReason) -> S
 pub async fn run(cli: Cli) -> anyhow::Result<i32> {
     let cwd = cli.working_dir();
     let tool = ToolPlane::new(&cwd, cli.output_byte_limit).map_err(|e| anyhow!(e))?;
-    let shared = Arc::new(Shared {
-        cli: cli.clone(),
-        tool,
-    });
+    let creds = load_credentials(&cli.credential_hosts)?;
 
     let pi_setup = if cli.agent == "pi" && !cli.skills.is_empty() {
         Some(pi::setup_skills(&cli.skills).map_err(|e| anyhow!(e))?)
     } else {
         None
     };
-    let agent = build_agent(&cli, pi_setup.as_ref().map(pi::PiSetup::agent_dir))?;
+    let agent = build_agent(&cli, pi_setup.as_ref().map(pi::PiSetup::agent_dir), &creds)?;
+    let shared = Arc::new(Shared {
+        cli: cli.clone(),
+        tool,
+        creds,
+    });
 
     let script_mode = cli.script.is_some();
     let ipc_path = cli.ipc_path.clone().unwrap_or_else(|| {
@@ -509,7 +548,7 @@ async fn orchestrate(
             .collect();
         if let Some(method) = agent_methods
             .iter()
-            .find(|method| credentials_available(&method.id().0))
+            .find(|method| credentials_available(&shared.creds, &method.id().0))
         {
             cx.send_request(AuthenticateRequest::new(method.id().clone()))
                 .block_task()
@@ -657,6 +696,20 @@ async fn orchestrate(
                 bail!("agent subprocess ended: {e}");
             }
             Step::Update(Ok(SessionMessage::StopReason(reason))) => {
+                // A turn that outlived its deadline is a timeout even when a
+                // response raced in behind it. Without this, a response that
+                // arrives just after `--timeout` wins the `select!` race and
+                // the run reports success.
+                if let (Some(limit), Some(start)) = (turn_timeout, active)
+                    && start.elapsed() >= limit
+                {
+                    let _ =
+                        cx.send_notification(CancelNotification::new(session.session_id().clone()));
+                    emit(Event::Error {
+                        message: "turn timed out".to_string(),
+                    });
+                    bail!("turn exceeded --timeout");
+                }
                 emit(Event::TurnDone {
                     stop_reason: stop_reason_name(&reason),
                     usage: None,

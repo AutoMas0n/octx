@@ -24,7 +24,8 @@ fn write_creds(creds: &HashMap<String, HashMap<String, String>>) -> Result<(), O
 /// Derive a 256-bit encryption key from the machine ID + random salt.
 fn derive_key(machine_id: &str, salt: &[u8]) -> Vec<u8>
 
-/// Get a stored token by host (used internally by dispatch.rs for env var injection).
+/// Get a stored token by host. Superseded by the shared `octx-creds` library
+/// (`Store`/`Secret`), which arms use directly — never through the environment.
 pub fn get_token(host: &str) -> Option<String>
 ```
 
@@ -57,7 +58,7 @@ pub fn get_token(host: &str) -> Option<String>
 - `add()`: load existing creds, insert/update, write back. Uses `FileLock` for concurrency.
 - `get(host, raw)`: if `raw`, print token to stdout. Otherwise print formatted message.
 - `list()`: print each host (token is `"***"`)
-- `get_token()`: internal, returns `Option<String>` — used by dispatch.rs to set `OCTX_TOKEN_<HOST>`
+- `get_token()`: lives in the shared `octx-creds` library (`Store`/`Secret`) — arms read a host credential there, never through the environment
 - Store format (JSON, decrypted): `{ "github": { "token": "..." }, ... }`
 - Host sub-qualifiers with dots: `"github.my-org"` is a valid key
 

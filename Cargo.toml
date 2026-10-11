@@ -1,5 +1,5 @@
 [workspace]
-members = ["arms/*"]
+members = ["arms/*", "crates/*"]
 resolver = "2"
 
 [workspace.package]
@@ -9,6 +9,7 @@ edition = "2024"
 [workspace.dependencies]
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
+octx-creds = { path = "crates/octx-creds" }
 
 [package]
 name = "octx"
@@ -32,10 +33,14 @@ flate2 = "1"
 tar = "0.4"
 fs2 = "0.4"
 toml = "0.8"
-aes-gcm = "0.10"
-argon2 = "0.5"
-rand = "0.8"
 rpassword = "7"
+octx-creds.workspace = true
+
+[profile.dev]
+# Keep the debug target dir bounded. Full debuginfo + incremental caches
+# accumulate ~5G+ on this workspace and are never garbage-collected.
+incremental = false
+debug = "line-tables-only"
 
 [profile.release]
 opt-level = "z"

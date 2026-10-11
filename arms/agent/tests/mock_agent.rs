@@ -43,6 +43,8 @@ fn run_agent(cwd: &Path, envs: &[(&str, &str)], args: &[&str]) -> Run {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_agent"));
     cmd.arg("--agent-command").arg(mock_command());
     cmd.current_dir(cwd);
+    // Isolate the credential store so tests never touch the real user config.
+    cmd.env("XDG_CONFIG_HOME", cwd.join(".config"));
     for (key, value) in envs {
         cmd.env(key, value);
     }
@@ -50,6 +52,15 @@ fn run_agent(cwd: &Path, envs: &[(&str, &str)], args: &[&str]) -> Run {
     Run {
         output: cmd.output().expect("agent should run"),
     }
+}
+
+/// Seed a credential into the scratch store at `<cwd>/.config/octx`.
+fn seed_credential(cwd: &Path, host: &str, token: &str) {
+    let store = octx_creds::Store::open(
+        cwd.join(".config").join("octx"),
+        octx_creds::machine_id().expect("machine id"),
+    );
+    store.add(host, token).expect("seed credential");
 }
 
 /// Read the mock agent's request log as parsed JSON lines.
@@ -112,14 +123,20 @@ fn advertises_terminal_and_fs_capabilities() {
 fn authenticates_when_credentials_are_available() {
     let dir = TempDir::new().unwrap();
     let log = log_path(&dir);
+    seed_credential(dir.path(), "mock", "secret");
     let run = run_agent(
         dir.path(),
+        &[("MOCK_LOG", log.to_str().unwrap()), ("MOCK_AUTH", "1")],
         &[
-            ("MOCK_LOG", log.to_str().unwrap()),
-            ("MOCK_AUTH", "1"),
-            ("OCTX_TOKEN_MOCK", "secret"),
+            "--cwd",
+            ".",
+            "--prompt",
+            "hi",
+            "--format",
+            "quiet",
+            "--credential-host",
+            "mock",
         ],
-        &["--cwd", ".", "--prompt", "hi", "--format", "quiet"],
     );
     assert_eq!(run.code(), 0, "stderr: {}", run.stderr());
     assert!(find(&read_log(&log), "authenticate").is_some());
@@ -130,7 +147,7 @@ fn fails_when_auth_is_required_but_no_credentials_exist() {
     let dir = TempDir::new().unwrap();
     let run = run_agent(
         dir.path(),
-        &[("MOCK_AUTH", "1"), ("OCTX_TOKEN_MOCK", "")],
+        &[("MOCK_AUTH", "1")],
         &["--cwd", ".", "--prompt", "hi", "--format", "quiet"],
     );
     assert_ne!(run.code(), 0);
@@ -415,22 +432,58 @@ fn permission_modes_approve_and_deny() {
 }
 
 #[test]
-fn passes_octx_token_env_to_the_agent_subprocess() {
+fn delegates_only_configured_credentials_to_the_agent_subprocess() {
     let dir = TempDir::new().unwrap();
     let log = log_path(&dir);
+    seed_credential(dir.path(), "github", "gh-secret");
+    seed_credential(dir.path(), "gitlab", "gl-secret");
     let run = run_agent(
         dir.path(),
+        &[("MOCK_LOG", log.to_str().unwrap())],
         &[
-            ("MOCK_LOG", log.to_str().unwrap()),
-            ("OCTX_TOKEN_GITHUB", "gh-secret"),
+            "--cwd",
+            ".",
+            "--prompt",
+            "hi",
+            "--format",
+            "quiet",
+            "--credential-host",
+            "github",
         ],
-        &["--cwd", ".", "--prompt", "hi", "--format", "quiet"],
     );
-    assert_eq!(run.code(), 0);
+    assert_eq!(run.code(), 0, "stderr: {}", run.stderr());
     let entries = read_log(&log);
+    let init = find(&entries, "initialize").expect("initialize");
+    assert_eq!(init["env_github"].as_str(), Some("gh-secret"));
     assert_eq!(
-        find(&entries, "initialize").unwrap()["env_github"].as_str(),
-        Some("gh-secret")
+        init["env_gitlab"].as_str(),
+        None,
+        "a host that was not configured must not reach the child"
+    );
+}
+
+#[test]
+fn missing_configured_credential_fails_fast_with_guidance() {
+    let dir = TempDir::new().unwrap();
+    let run = run_agent(
+        dir.path(),
+        &[],
+        &[
+            "--cwd",
+            ".",
+            "--prompt",
+            "hi",
+            "--format",
+            "quiet",
+            "--credential-host",
+            "ghost",
+        ],
+    );
+    assert_ne!(run.code(), 0);
+    assert!(
+        run.stderr().contains("octx creds add ghost"),
+        "stderr should tell the user how to add the credential: {}",
+        run.stderr()
     );
 }
 
@@ -557,9 +610,13 @@ while True:
 #[test]
 fn turn_timeout_exits_nonzero() {
     let dir = TempDir::new().unwrap();
+    let log = dir.path().join("mock.jsonl");
     let run = run_agent(
         dir.path(),
-        &[("MOCK_SLEEP_MS", "10000")],
+        &[
+            ("MOCK_SLEEP_MS", "10000"),
+            ("MOCK_LOG", log.to_str().unwrap()),
+        ],
         &[
             "--cwd",
             ".",
@@ -568,11 +625,32 @@ fn turn_timeout_exits_nonzero() {
             "--prompt",
             "hi",
             "--format",
-            "quiet",
+            "json",
         ],
     );
-    assert_ne!(run.code(), 0);
-    assert!(run.stderr().contains("timeout"), "stderr: {}", run.stderr());
+    // Diagnostics: the mock records why its wait ended, and the arm's JSON
+    // event stream shows which stop reason it accepted.
+    let diag = || {
+        format!(
+            "exit={} stderr={:?}\narm events: {}\nmock log:\n{}",
+            run.code(),
+            run.stderr(),
+            run.stdout().trim(),
+            std::fs::read_to_string(&log).unwrap_or_else(|e| format!("<unreadable: {e}>")),
+        )
+    };
+    assert_ne!(run.code(), 0, "expected a non-zero exit\n{}", diag());
+    assert!(
+        run.stderr().contains("timeout"),
+        "expected a timeout error\n{}",
+        diag()
+    );
+    assert_eq!(
+        run.json()["failed"],
+        Value::from(true),
+        "the arm must report the run as failed, not as a completed turn\n{}",
+        diag()
+    );
 }
 
 #[test]

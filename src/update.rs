@@ -302,14 +302,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_empty_manifest_returns_ok() {
-        // Set up a temporary data dir to avoid contaminating the real one
-        let tmp_dir =
-            std::env::temp_dir().join(format!("octx-test-update-empty-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tmp_dir);
+        // Own data dir: the real one may hold installed arms, and this test
+        // asserts the manifest is empty.
+        let _dir = crate::paths::TestDataDir::new("update-empty");
 
-        // Create empty manifest in the temp area
-        // We can't easily override paths::data_dir(), so we test the worker logic
-        // and verify that the function handles the empty manifest case gracefully.
         let manifest = Manifest::load().unwrap();
         assert!(
             manifest.arms.is_empty(),
@@ -319,7 +315,5 @@ mod tests {
         // worker_count should always work regardless of manifest
         assert!(worker_count() >= 1);
         assert!(worker_count() <= 16);
-
-        let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 }

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::OctxError;
@@ -42,11 +42,22 @@ pub fn find_arm(name: &str) -> Option<PathBuf> {
     None
 }
 
+/// Build the command that dispatches an arm.
+///
+/// The caller's environment is inherited, but **no credential is ever added**:
+/// delivering secrets through the environment is exactly what the shared
+/// credential library replaces. Keep this builder credential-free. Stdio is
+/// applied by [`execute`] so tests can capture the child environment.
+fn command_for(bin_path: &Path, args: &[String]) -> Command {
+    let mut command = Command::new(bin_path);
+    command.args(args);
+    command
+}
+
 /// Execute a binary with given args, passing through stdin/stdout/stderr.
 /// Returns the exit code of the child process.
 pub fn execute(bin_path: &std::path::Path, args: &[String]) -> Result<i32, OctxError> {
-    let status = Command::new(bin_path)
-        .args(args)
+    let status = command_for(bin_path, args)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
@@ -154,5 +165,35 @@ mod tests {
     fn test_execute_returns_err_for_nonexistent_binary() {
         let result = execute(std::path::Path::new("/nonexistent-binary-xyz-123"), &[]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn dispatched_arm_environment_contains_no_credential() {
+        // A stored credential must never reach a dispatched arm's environment.
+        let dir = std::env::temp_dir().join("octx-dispatch-env-test");
+        let _ = fs::remove_dir_all(&dir);
+        octx_creds::Store::open(&dir, "dispatch-test-machine")
+            .add("github", "ghp_dispatch_secret")
+            .expect("store credential");
+
+        // `env` prints the child environment; `.output()` captures it.
+        let output = command_for(Path::new("env"), &[])
+            .output()
+            .expect("env should run");
+        let env = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            env.contains("PATH="),
+            "the child environment should be captured for inspection"
+        );
+        assert!(
+            !env.contains("OCTX_TOKEN_"),
+            "dispatch must not inject credential variables"
+        );
+        assert!(
+            !env.contains("ghp_dispatch_secret"),
+            "stored credential must not leak into the arm environment"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -161,9 +161,21 @@ When `--system-prompt <text>` is provided, the agent arm SHALL apply it agent-ag
 - **WHEN** the user runs with `--system-prompt "You are a careful reviewer."`
 - **THEN** the first prompt the agent receives is prefixed with that text and the original prompt body
 
-### Requirement: OCTX_TOKEN injection
-The agent arm SHALL read credentials from octx's credential store via `OCTX_TOKEN_*` env vars (already injected by the head) and pass them through to the agent subprocess environment.
+### Requirement: Credential retrieval and delegation
 
-#### Scenario: Credentials pass through
-- **WHEN** the agent arm is invoked with `OCTX_TOKEN_GITHUB` set in its environment
-- **THEN** the agent subprocess receives the same `OCTX_TOKEN_GITHUB` env var
+The agent arm SHALL obtain credentials through the `credential-access` library and SHALL NOT depend on environment variables injected by the head. When it launches an agent subprocess that requires credentials in its environment, it SHALL provide only the credentials configured for that agent and SHALL NOT forward every stored credential.
+
+#### Scenario: Credentials retrieved through the library
+
+- **WHEN** the agent arm needs a credential for an agent connection
+- **THEN** it retrieves that credential through the shared credential library
+
+#### Scenario: Only configured credentials are delegated
+
+- **WHEN** the agent arm launches an agent subprocess that expects credentials in its environment
+- **THEN** the subprocess receives only the credentials configured for that agent
+
+#### Scenario: No head-injected variables required
+
+- **WHEN** the agent arm runs without any `OCTX_TOKEN_*` variable in its environment
+- **THEN** it can still obtain stored credentials through the library

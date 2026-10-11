@@ -7,6 +7,8 @@ use std::path::PathBuf;
 thread_local! {
     static TEST_CONFIG_DIR: std::cell::RefCell<Option<PathBuf>> =
         const { std::cell::RefCell::new(None) };
+    static TEST_DATA_DIR: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// Redirect config_dir for testing. Sets the thread-local override.
@@ -19,11 +21,68 @@ pub fn set_test_config_dir(path: PathBuf) {
     });
 }
 
+/// Redirect data_dir for testing. Prefer [`TestDataDir`], which also cleans up.
+#[cfg(test)]
+pub fn set_test_data_dir(path: PathBuf) {
+    TEST_DATA_DIR.with(|cell| {
+        *cell.borrow_mut() = Some(path);
+    });
+}
+
+/// A throwaway data directory for tests: points `data_dir()` at a unique
+/// temporary directory and restores the real one on drop.
+///
+/// Any test that reaches `data_dir()` must hold one of these. The real
+/// directory holds user state — `installed-manifest.json` among it — so a test
+/// without it reads and writes state it does not own, and can delete it.
+#[cfg(test)]
+pub struct TestDataDir {
+    path: PathBuf,
+}
+
+#[cfg(test)]
+impl TestDataDir {
+    pub fn new(tag: &str) -> Self {
+        let path = std::env::temp_dir().join(format!(
+            "octx-test-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).expect("create test data dir");
+        set_test_data_dir(path.clone());
+        Self { path }
+    }
+
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestDataDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+        TEST_DATA_DIR.with(|cell| {
+            *cell.borrow_mut() = None;
+        });
+    }
+}
+
 /// Returns the data directory for binaries, cache, and state.
 /// Linux:   ~/.local/share/octx/
 /// macOS:   ~/Library/Application Support/octx/
 /// Windows: C:\Users\<user>\AppData\Local\octx/
+///
+/// In tests, returns the test override path if one is set.
 pub fn data_dir() -> PathBuf {
+    #[cfg(test)]
+    {
+        let result = TEST_DATA_DIR.with(|cell| cell.borrow().clone());
+        if let Some(override_path) = result {
+            return override_path;
+        }
+    }
     dirs::data_dir()
         .expect("octx data_dir: home directory not found (are you in a sandbox?)")
         .join("octx")

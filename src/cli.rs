@@ -108,6 +108,8 @@ pub enum CredsCommand {
     },
     /// List all stored credential hosts.
     List,
+    /// Move an unreadable credential store aside (never deletes it).
+    Reset,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -226,6 +228,7 @@ fn handle_creds(cmd: CredsCommand) -> Result<(), OctxError> {
         CredsCommand::Get { host, raw } => crate::creds::get(&host, raw),
         CredsCommand::Remove { host } => crate::creds::remove(&host),
         CredsCommand::List => crate::creds::list(),
+        CredsCommand::Reset => crate::creds::reset(),
     }
 }
 
@@ -479,6 +482,13 @@ mod tests {
         let args: Vec<&str> = vec!["octx", "creds", "list"];
         let cli = Cli::try_parse_from(args).expect("should parse creds list");
         assert!(matches!(cli.command, Command::Creds(CredsCommand::List)));
+    }
+
+    #[test]
+    fn test_cli_creds_reset_parses() {
+        let args: Vec<&str> = vec!["octx", "creds", "reset"];
+        let cli = Cli::try_parse_from(args).expect("should parse creds reset");
+        assert!(matches!(cli.command, Command::Creds(CredsCommand::Reset)));
     }
 
     #[test]

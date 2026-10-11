@@ -64,6 +64,11 @@ pub struct Cli {
     #[arg(long, value_delimiter = ',', value_name = "NAME")]
     pub skills: Vec<String>,
 
+    /// Hosts whose stored credentials are retrieved from the octx credential
+    /// library and delegated to the agent subprocess environment (repeatable).
+    #[arg(long = "credential-host", value_name = "HOST")]
+    pub credential_hosts: Vec<String>,
+
     /// Text prepended to the first prompt of the session.
     #[arg(long, value_name = "TEXT")]
     pub system_prompt: Option<String>,

@@ -134,6 +134,7 @@ class MockAgent:
                 "params": params,
                 "response": response,
                 "env_github": os.environ.get("OCTX_TOKEN_GITHUB"),
+                "env_gitlab": os.environ.get("OCTX_TOKEN_GITLAB"),
             })
             self.respond(rid, response)
         elif method == "authenticate":
@@ -239,6 +240,7 @@ class MockAgent:
         ]
         text = "".join(parts)
         log({"method": "session/prompt", "params": params, "text": text})
+        started = time.time()
         self.notify(
             "session/update",
             {
@@ -279,24 +281,46 @@ class MockAgent:
             sys.stderr.write("mock agent crashing\n")
             sys.stderr.flush()
             os._exit(7)
+        log(
+            {
+                "respond": "cancelled" if cancelled else "end_turn",
+                "rid": rid,
+                "elapsed_ms": int((time.time() - started) * 1000),
+            }
+        )
         self.respond(rid, {"stopReason": "cancelled" if cancelled else "end_turn"})
 
     def wait(self, sleep_ms):
         """Sleep, but keep serving cancel notifications.
 
-        Returns True when a cancel arrived.
+        Returns True when a cancel arrived. The reason it stopped is recorded to
+        $MOCK_LOG, so a test can tell a real sleep from a closed pipe.
         """
-        deadline = time.time() + sleep_ms / 1000.0
+        started = time.time()
+        deadline = started + sleep_ms / 1000.0
         while True:
             remaining = deadline - time.time()
             if remaining <= 0:
+                log({"wait": "slept", "elapsed_ms": int((time.time() - started) * 1000)})
                 return False
             ready, _, _ = select.select([sys.stdin], [], [], min(remaining, 0.05))
             if not ready:
                 continue
             line = sys.stdin.readline()
             if not line:
-                return False
+                ppid = os.getppid()
+                log(
+                    {
+                        "wait": "eof",
+                        "elapsed_ms": int((time.time() - started) * 1000),
+                        "parent_alive": os.path.exists(f"/proc/{ppid}"),
+                        "wall": time.time(),
+                    }
+                )
+                # A closed stdin is not a completed turn. A real agent exits
+                # when its client goes away, so do that instead of fabricating
+                # a stop reason the client would accept as success.
+                sys.exit(0)
             line = line.strip()
             if not line:
                 continue
@@ -312,6 +336,7 @@ def main():
     while True:
         message = agent.read()
         if message is None:
+            log({"exit": "stdin closed"})
             return
         agent.handle(message)
 

@@ -1,0 +1,21 @@
+[package]
+name = "octx-creds"
+version.workspace = true
+edition.workspace = true
+description = "Shared encrypted credential store for octx and its arms"
+
+[dependencies]
+aes-gcm = "0.10"
+argon2 = "0.5"
+rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+zeroize = "1"
+secrecy = "0.10"
+fs2 = "0.4"
+dirs = "6"
+http = "1"
+
+[dev-dependencies]
+tempfile = "3"
