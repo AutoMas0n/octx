@@ -102,9 +102,11 @@ octx x fmt [files...] [--check]
 - `octx x fmt src/` — format all files in src/
 - `octx x fmt --check src/` — check if files are formatted (exit 1 if not)
 
-## Environment
-- `OCTX_TOKEN_GITHUB` — injected when arm is spawned via `octx x`
+## Credentials
+None.
 ```
+
+Every arm skill must follow [`SKILL-CONTRACT.md`](../SKILL-CONTRACT.md): an `# <arm-name>` heading and the seven sections — Description, Usage, Options, Examples, Credentials, Prerequisites, Failure modes — in that order. The template above is abridged; a real skill carries all seven. Credentials are named by host (`octx creds add <host>`), never supplied through the environment.
 
 ## Dependencies
 
@@ -128,5 +130,5 @@ octx x fmt [files...] [--check]
 - [ ] `./target/release/fmt --help` works
 - [ ] `./target/release/fmt --version` works
 - [ ] `fmt --check` returns 0 for clean files, 1 for violations
-- [ ] skill.md exists with Description, Usage, Examples, Environment sections
+- [ ] skill.md conforms to SKILL-CONTRACT.md (Description, Usage, Options, Examples, Credentials, Prerequisites, Failure modes)
 - [ ] arms/fmt/Cargo.toml uses opt-level = z, lto, strip, panic = abort
