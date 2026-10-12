@@ -41,9 +41,11 @@ docker volume create "$PROFILE_VOLUME" >/dev/null
 
 # The browser profile lives in a named volume: the container runs as root, and
 # a bind-mounted profile would leave root-owned files on the host.
+# No --name: two accounts are refreshed from the same crontab, and a fixed
+# name means the second `docker run` dies with "name already in use". Docker's
+# generated name is unique, and --rm cleans up regardless.
 exec docker run --rm \
     --shm-size=1g \
-    --name octx-qobuz-harvest \
     -e "DISPLAY=${DISPLAY_NUM}" \
     -v "${HOME}/.config/octx:/root/.config/octx" \
     -v "/etc/machine-id:/etc/machine-id:ro" \
