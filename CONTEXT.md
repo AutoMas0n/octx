@@ -201,7 +201,13 @@ Because the reCAPTCHA refuses a headless browser, sign-in needs a visible
 one. [`tools/harvest-docker.sh`](tools/harvest-docker.sh) supplies Chromium
 and a virtual display from a container, so a scheduler box needs only Docker
 — no root, no packages. The browser profile lives in a Docker named volume,
-so a run reuses the session and only signs in when it has died.
+so a run reuses the session and only signs in when it has died. There is one
+volume **per account**, because a profile holds a single signed-in session: a
+shared one would let a run for one account reuse another's session and store
+the wrong person's token. For the same reason the harvester confirms with the
+service which account a captured token belongs to, and refuses to store it
+when that is not the account's expected identity — failing closed, so the
+previous token stays in place rather than being replaced by someone else's.
 
 ## Arm contract
 
