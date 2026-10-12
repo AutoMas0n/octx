@@ -74,7 +74,7 @@ The document's shape:
 - Only the fields a run needs are read: `--output json` never reads the Qobuz fields, and a public `recs --user` read reads nothing at all. No credential value is ever printed.
 
 ## Prerequisites
-- **The ListenBrainz account must already have scrobbles.** `recs` reads a collaborative-filtering model ListenBrainz trains from listens an external scrobbler submits; `jam` cannot create that input, so a user with no listening history has no recommendations until something scrobbles some. Run `octx x jam scrobble` first if needed.
+- **The ListenBrainz account must already have scrobbles.** `recs` reads a collaborative-filtering model ListenBrainz trains from listens an external scrobbler submits; `jam` cannot create that input, so a user with no listening history has no recommendations until something scrobbles some. Run `octx x jam scrobble` first if needed. ListenBrainz only rebuilds that model on its own daily run (currently 02:01 UTC), so an account scrobbled since the last one keeps answering `204` for up to a day — that is the model catching up, not a fault.
 - **A credential document at host `jam`** (above) with the account fields the run needs: `listenbrainz.user`/`token` for `recs`, `radio`, and `status`; `qobuz.user_auth_token` for `--output qobuz`; the shared `lastfm.api_key` (and a `lastfm.user`) for `--source lastfm`.
 - **A Qobuz account** whose `user_auth_token` is in the document, for `--output qobuz`. The catalog and playlist endpoints are what the sink talks to.
 - **Network access** to `api.listenbrainz.org`, `listenbrainz.org/player`, `www.qobuz.com`, and (for the Last.fm source) `ws.audioscrobbler.com`.
@@ -85,7 +85,7 @@ The document's shape:
 - **A document-producing subcommand without `--output`**, or with a sink invalid for it (for example `recs --output listenbrainz`) — exits non-zero before any request. `status` needs no sink.
 - **The credential document is absent, malformed, or lacks a needed field** — exits non-zero naming the field's path (for example `accounts.wife.qobuz.user_auth_token`) and host `jam`, and never echoing a value. Add the field with `octx creds add jam`.
 - **Several accounts and no `default`, or an unknown `--account`** — exits non-zero naming the accounts present; nothing is requested.
-- **The recommendation endpoint answers `204`, or a source otherwise yields nothing** — exits non-zero with guidance and writes nothing. A source with nothing to give is never treated as an empty playlist, so no track is removed and no document reaches stdout. This is normal for a user with no listening history yet.
+- **The recommendation endpoint answers `204`, or a source otherwise yields nothing** — exits non-zero with guidance and writes nothing. A source with nothing to give is never treated as an empty playlist, so no track is removed and no document reaches stdout. This is normal both for a user with no listening history yet and for one scrobbled since ListenBrainz's last daily model rebuild — check `octx x jam status` again after that run before concluding anything is wrong.
 - **`radio` without `--prompt` or `--mode`** — exits non-zero naming the missing argument.
 - **`--output qobuz` for an account with no `qobuz.user_auth_token`** — exits non-zero naming that field before any Qobuz request.
 - **A Qobuz request is rate-limited (`429`)** — the arm backs off and retries; if retries are exhausted it exits non-zero reporting the Qobuz error. An entry whose catalog search fails is reported and skipped, and the rest of the run continues.
