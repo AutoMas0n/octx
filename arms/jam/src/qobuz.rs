@@ -29,6 +29,17 @@ pub const TRACK_BATCH: usize = 50;
 /// How many playlist tracks are read per page.
 const PAGE: usize = 500;
 
+/// The parameter `playlist/addTracks` takes.
+const ADD_TRACKS_PARAM: &str = "track_ids";
+
+/// The parameter `playlist/deleteTracks` takes.
+///
+/// The asymmetry is Qobuz's: additions name *tracks*, deletions name playlist
+/// *entries*. Sending `track_ids` to a deletion is refused with "Missing
+/// argument: playlist_track_ids", which is why removals never took effect and
+/// a re-synced playlist only ever grew.
+const DELETE_TRACKS_PARAM: &str = "playlist_track_ids";
+
 /// A playlist the account owns.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlaylistRef {
@@ -38,6 +49,19 @@ pub struct PlaylistRef {
     pub name: String,
     /// How many tracks it holds, when the API said.
     pub tracks_count: Option<u64>,
+}
+
+/// One entry in a playlist.
+///
+/// Qobuz addresses an entry by its `playlist_track_id` and the track it holds
+/// by `id`. Convergence diffs on the track id but deletes by the entry id, so
+/// both are carried.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlaylistEntry {
+    /// The track the entry holds.
+    pub track_id: String,
+    /// The playlist's own identifier for the entry; what deletion takes.
+    pub entry_id: String,
 }
 
 /// A client bound to one account's token.
@@ -164,9 +188,9 @@ impl<'a> Client<'a> {
             .collect())
     }
 
-    /// The track ids in a playlist, in playlist order.
-    pub async fn playlist_tracks(&self, playlist_id: &str) -> Result<Vec<String>> {
-        let mut ids = Vec::new();
+    /// The entries in a playlist, in playlist order.
+    pub async fn playlist_entries(&self, playlist_id: &str) -> Result<Vec<PlaylistEntry>> {
+        let mut entries = Vec::new();
         let mut offset = 0usize;
         loop {
             let value = self
@@ -192,24 +216,25 @@ impl<'a> Client<'a> {
             }
 
             let page_len = items.len();
-            ids.extend(
-                items
-                    .into_iter()
-                    .filter_map(|item| item.get("id").and_then(id_as_string)),
-            );
+            entries.extend(items.into_iter().filter_map(|item| {
+                Some(PlaylistEntry {
+                    track_id: item.get("id").and_then(id_as_string)?,
+                    entry_id: item.get("playlist_track_id").and_then(id_as_string)?,
+                })
+            }));
 
             let total = value
                 .get("tracks")
                 .and_then(|tracks| tracks.get("total"))
                 .and_then(Value::as_u64)
                 .map(|total| total as usize)
-                .unwrap_or(ids.len());
+                .unwrap_or(entries.len());
             offset += page_len;
             if offset >= total || page_len < PAGE {
                 break;
             }
         }
-        Ok(ids)
+        Ok(entries)
     }
 
     /// Create a playlist and return its id.
@@ -233,28 +258,39 @@ impl<'a> Client<'a> {
     /// Append tracks to a playlist, in order, in batches.
     pub async fn add_tracks(&self, playlist_id: &str, track_ids: &[String]) -> Result<()> {
         for batch in track_ids.chunks(TRACK_BATCH) {
-            self.mutate("playlist/addTracks", playlist_id, batch)
+            self.mutate("playlist/addTracks", ADD_TRACKS_PARAM, playlist_id, batch)
                 .await?;
         }
         Ok(())
     }
 
-    /// Remove tracks from a playlist, in batches.
-    pub async fn remove_tracks(&self, playlist_id: &str, track_ids: &[String]) -> Result<()> {
-        for batch in track_ids.chunks(TRACK_BATCH) {
-            self.mutate("playlist/deleteTracks", playlist_id, batch)
-                .await?;
+    /// Remove playlist entries, in batches, by the playlist's own entry ids.
+    pub async fn remove_entries(&self, playlist_id: &str, entry_ids: &[String]) -> Result<()> {
+        for batch in entry_ids.chunks(TRACK_BATCH) {
+            self.mutate(
+                "playlist/deleteTracks",
+                DELETE_TRACKS_PARAM,
+                playlist_id,
+                batch,
+            )
+            .await?;
         }
         Ok(())
     }
 
     /// One mutation call.
-    async fn mutate(&self, route: &str, playlist_id: &str, track_ids: &[String]) -> Result<()> {
+    async fn mutate(
+        &self,
+        route: &str,
+        param: &str,
+        playlist_id: &str,
+        ids: &[String],
+    ) -> Result<()> {
         self.get(
             route,
             &[
                 ("playlist_id", playlist_id.to_string()),
-                ("track_ids", track_ids.join(",")),
+                (param, ids.join(",")),
             ],
         )
         .await?;

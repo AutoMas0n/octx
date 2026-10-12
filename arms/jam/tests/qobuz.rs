@@ -89,15 +89,45 @@ struct Catalog {
     id: String,
 }
 
+/// One entry the fake Qobuz holds in a playlist.
+#[derive(Clone)]
+struct Entry {
+    track_id: String,
+    entry_id: String,
+}
+
 /// The mutable state behind the fake Qobuz.
 #[derive(Default)]
 struct State {
     playlists: Vec<(String, String)>,
-    tracks: HashMap<String, Vec<String>>,
+    /// Playlist id -> its entries, in playlist order.
+    entries: HashMap<String, Vec<Entry>>,
     next_id: u64,
+    next_entry_id: u64,
     catalog: Vec<Catalog>,
     adds: Vec<Vec<String>>,
     removes: Vec<Vec<String>>,
+}
+
+impl State {
+    /// Put a playlist holding these track ids into the fake.
+    fn seed_playlist(&mut self, id: &str, name: &str, track_ids: &[&str]) {
+        self.playlists.push((id.to_string(), name.to_string()));
+        let mut entries = Vec::new();
+        for track_id in track_ids {
+            entries.push(self.new_entry(track_id));
+        }
+        self.entries.insert(id.to_string(), entries);
+    }
+
+    /// A fresh entry for one track.
+    fn new_entry(&mut self, track_id: &str) -> Entry {
+        self.next_entry_id += 1;
+        Entry {
+            track_id: track_id.to_string(),
+            entry_id: format!("e{}", self.next_entry_id),
+        }
+    }
 }
 
 /// A handle on the fake Qobuz's state, for assertions.
@@ -116,8 +146,11 @@ impl Fake {
             .iter()
             .find(|(_, playlist_name)| playlist_name == name)
             .map(|(id, _)| id.clone());
-        id.and_then(|id| state.tracks.get(&id).cloned())
+        id.and_then(|id| state.entries.get(&id).cloned())
             .unwrap_or_default()
+            .into_iter()
+            .map(|entry| entry.track_id)
+            .collect()
     }
 
     /// The track ids each `addTracks` call carried, in call order.
@@ -169,10 +202,19 @@ fn qobuz(catalog: Vec<(&str, &str, &str)>) -> (Mock, Fake) {
             }
             "/playlist/get" => {
                 let id = request.query("playlist_id").unwrap_or_default();
-                let tracks = state.tracks.get(&id).cloned().unwrap_or_default();
-                let items: Vec<Value> = tracks.iter().map(|id| json!({ "id": id })).collect();
+                let entries = state.entries.get(&id).cloned().unwrap_or_default();
+                // Qobuz names the track `id` and the entry `playlist_track_id`.
+                let items: Vec<Value> = entries
+                    .iter()
+                    .map(|entry| {
+                        json!({
+                            "id": entry.track_id,
+                            "playlist_track_id": entry.entry_id,
+                        })
+                    })
+                    .collect();
                 Response::json(
-                    json!({ "tracks": { "items": items, "total": tracks.len() } }).to_string(),
+                    json!({ "tracks": { "items": items, "total": entries.len() } }).to_string(),
                 )
             }
             "/playlist/create" => {
@@ -180,22 +222,28 @@ fn qobuz(catalog: Vec<(&str, &str, &str)>) -> (Mock, Fake) {
                 state.next_id += 1;
                 let name = request.query("name").unwrap_or_default();
                 state.playlists.push((id.clone(), name));
-                state.tracks.insert(id.clone(), Vec::new());
+                state.entries.insert(id.clone(), Vec::new());
                 Response::json(json!({ "id": id }).to_string())
             }
             "/playlist/addTracks" => {
                 let id = request.query("playlist_id").unwrap_or_default();
                 let ids: Vec<String> = split_ids(request.query("track_ids").unwrap_or_default());
                 state.adds.push(ids.clone());
-                state.tracks.entry(id).or_default().extend(ids);
+                let mut fresh = Vec::with_capacity(ids.len());
+                for track_id in &ids {
+                    fresh.push(state.new_entry(track_id));
+                }
+                state.entries.entry(id).or_default().extend(fresh);
                 Response::json("{}")
             }
             "/playlist/deleteTracks" => {
                 let id = request.query("playlist_id").unwrap_or_default();
-                let ids: Vec<String> = split_ids(request.query("track_ids").unwrap_or_default());
+                // Deletion names the playlist's own entries, never track ids.
+                let ids: Vec<String> =
+                    split_ids(request.query("playlist_track_ids").unwrap_or_default());
                 state.removes.push(ids.clone());
-                if let Some(tracks) = state.tracks.get_mut(&id) {
-                    tracks.retain(|track| !ids.contains(track));
+                if let Some(entries) = state.entries.get_mut(&id) {
+                    entries.retain(|entry| !ids.contains(&entry.entry_id));
                 }
                 Response::json("{}")
             }
@@ -320,21 +368,43 @@ fn a_track_no_longer_recommended_is_removed() {
     // The playlist already holds a track the source no longer recommends.
     {
         let mut state = fake.state.lock().expect("state lock");
-        state
-            .playlists
-            .push(("55".to_string(), "ListenBrainz Discovery".to_string()));
-        state
-            .tracks
-            .insert("55".to_string(), vec!["999".to_string()]);
+        state.seed_playlist("55", "ListenBrainz Discovery", &["999"]);
     }
 
     let output = run(&lb, &qobuz, &recs_args());
     output.ok();
 
     assert_eq!(fake.adds(), vec![vec!["101".to_string()]]);
-    assert_eq!(fake.removes(), vec![vec!["999".to_string()]]);
+    assert_eq!(fake.removes().len(), 1, "one removal call");
+    assert_eq!(fake.removes()[0].len(), 1, "the stale entry is named once");
     assert_eq!(fake.tracks("ListenBrainz Discovery"), vec!["101"]);
     output.stderr_has("removed 1");
+}
+
+#[test]
+fn removals_name_playlist_entries_not_tracks() {
+    // Qobuz refuses `track_ids` on a deletion, so a removal that carried track
+    // ids was rejected and the playlist only ever grew. This is that guard.
+    let lb = listenbrainz(recs_body(&["rec-a"]));
+    let (qobuz, fake) = qobuz(vec![("An Artist", "Track rec-a", "101")]);
+    {
+        let mut state = fake.state.lock().expect("state lock");
+        state.seed_playlist("55", "ListenBrainz Discovery", &["999"]);
+    }
+
+    run(&lb, &qobuz, &recs_args()).ok();
+
+    let calls = qobuz.route("/playlist/deleteTracks");
+    assert_eq!(calls.len(), 1, "one removal call");
+    let call = &calls[0];
+    assert!(
+        call.query("track_ids").is_none(),
+        "track_ids is the wrong parameter for a deletion: {call:?}"
+    );
+    let ids = call
+        .query("playlist_track_ids")
+        .expect("a deletion names playlist_track_ids");
+    assert!(!ids.is_empty(), "the entry ids must not be empty");
 }
 
 #[test]
@@ -343,12 +413,7 @@ fn additions_are_applied_before_removals() {
     let (qobuz, fake) = qobuz(vec![("An Artist", "Track rec-a", "101")]);
     {
         let mut state = fake.state.lock().expect("state lock");
-        state
-            .playlists
-            .push(("55".to_string(), "ListenBrainz Discovery".to_string()));
-        state
-            .tracks
-            .insert("55".to_string(), vec!["999".to_string()]);
+        state.seed_playlist("55", "ListenBrainz Discovery", &["999"]);
     }
 
     run(&lb, &qobuz, &recs_args()).ok();
@@ -416,8 +481,7 @@ fn an_existing_named_playlist_is_used_without_creating() {
     let (qobuz, fake) = qobuz(vec![("An Artist", "Track rec-a", "101")]);
     {
         let mut state = fake.state.lock().expect("state lock");
-        state.playlists.push(("77".to_string(), "Jams".to_string()));
-        state.tracks.insert("77".to_string(), Vec::new());
+        state.seed_playlist("77", "Jams", &[]);
     }
 
     run(

@@ -125,8 +125,19 @@ pub async fn sync(
         }
     }
 
-    let current = client.playlist_tracks(&playlist_id).await?;
-    let (added, removed) = plan(&desired, &current);
+    let current = client.playlist_entries(&playlist_id).await?;
+    let current_track_ids: Vec<String> =
+        current.iter().map(|entry| entry.track_id.clone()).collect();
+    let (added, removed) = plan(&desired, &current_track_ids);
+
+    // Deletion takes the playlist's own entry ids, so the stale track ids are
+    // mapped back through the entries that carry them. Playlist order is
+    // preserved and an entry is named once however often its track repeats.
+    let removals: Vec<String> = current
+        .iter()
+        .filter(|entry| removed.contains(&entry.track_id))
+        .map(|entry| entry.entry_id.clone())
+        .collect();
 
     if !dry_run {
         // Additions first: a run interrupted between the two leaves extra
@@ -134,8 +145,8 @@ pub async fn sync(
         if !added.is_empty() {
             client.add_tracks(&playlist_id, &added).await?;
         }
-        if !removed.is_empty() {
-            client.remove_tracks(&playlist_id, &removed).await?;
+        if !removals.is_empty() {
+            client.remove_entries(&playlist_id, &removals).await?;
         }
     }
 
@@ -145,7 +156,7 @@ pub async fn sync(
         resolved: desired.len(),
         unresolved,
         added: added.len(),
-        removed: removed.len(),
+        removed: removals.len(),
         dry_run,
     })
 }
