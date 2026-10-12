@@ -17,8 +17,19 @@ set -euo pipefail
 IMAGE="${HARVEST_IMAGE:-octx-qobuz-harvest:1.63.0}"
 TOOLS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUT="${HARVEST_OUT:-${HOME}/qobuz-harvest}"
-PROFILE_VOLUME="${HARVEST_PROFILE_VOLUME:-octx-qobuz-profile}"
 DISPLAY_NUM="${HARVEST_DISPLAY:-:99}"
+
+# One browser profile per account. A profile holds a single signed-in Qobuz
+# session, so a shared one would let `--account sam` reuse Jesse's session and
+# store *his* token under her name. Separate volumes keep the sessions apart.
+ACCOUNT=""
+prev=""
+for arg in "$@"; do
+    [ "$prev" = "--account" ] && ACCOUNT="$arg"
+    case "$arg" in --account=*) ACCOUNT="${arg#--account=}" ;; esac
+    prev="$arg"
+done
+PROFILE_VOLUME="${HARVEST_PROFILE_VOLUME:-octx-qobuz-profile-${ACCOUNT:-default}}"
 
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
     echo "building $IMAGE (first run only)..." >&2

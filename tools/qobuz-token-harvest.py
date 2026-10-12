@@ -67,6 +67,10 @@ TOKEN_HEADER = "x-user-auth-token"
 # so anything short is discarded rather than stored as a credential.
 MIN_TOKEN_LEN = 20
 DEFAULT_PROFILE = Path.home() / ".local" / "share" / "octx" / "qobuz-profile"
+# The web player's application id, used to ask Qobuz who a token belongs to.
+# An account may override it with `accounts.<name>.qobuz.app_id`.
+APP_ID = "798273057"
+API_BASE = "https://www.qobuz.com/api.json/0.2/"
 
 # play.qobuz.com opens on a call-to-action and hands off to the shop's
 # server-rendered sign-in form. Both are rendered client-side, so every lookup
@@ -384,6 +388,42 @@ def harvest(
     return observed.get("token")
 
 
+def app_id_from(document: str | None, account: str) -> str:
+    """The Qobuz application id for an account, falling back to the player's."""
+    if document:
+        try:
+            doc = json.loads(document)
+        except json.JSONDecodeError:
+            return APP_ID
+        if isinstance(doc, dict):
+            qobuz = doc.get("accounts", {}).get(account, {}).get("qobuz", {})
+            if isinstance(qobuz, dict) and qobuz.get("app_id"):
+                return str(qobuz["app_id"])
+    return APP_ID
+
+
+def qobuz_identity(token: str, app_id: str) -> dict | None:
+    """Ask Qobuz who a token belongs to, or None when that cannot be told.
+
+    A browser profile holds one signed-in session, so a token observed in it may
+    belong to a different account than the one being refreshed. Storing that
+    silently would point one person's playlist sync at another person's library,
+    so the identity is confirmed before anything is written.
+    """
+    import urllib.error
+    import urllib.request
+
+    request = urllib.request.Request(f"{API_BASE}user/get?app_id={app_id}")
+    request.add_header("X-App-Id", app_id)
+    request.add_header("X-User-Auth-Token", token)
+    try:
+        with urllib.request.urlopen(request, timeout=30) as answer:
+            body = json.loads(answer.read())
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+    return body if isinstance(body, dict) else None
+
+
 def self_test() -> int:
     """Check the one piece that touches the credential store."""
     created = merge_token(None, "jesse", "tok-1")
@@ -481,6 +521,20 @@ def main() -> int:
             "./harvest-docker.sh, or --headful where a display exists"
         )
         return 1
+
+    expected = (email or "").strip()
+    if expected:
+        who = qobuz_identity(token, app_id_from(document, account))
+        if who is None:
+            log("could not confirm which account this token belongs to")
+            log("leaving the stored token untouched rather than risk writing another account's")
+            return 1
+        actual = str(who.get("email") or who.get("login") or "").strip()
+        if actual.lower() != expected.lower():
+            log(f"refusing to store a token for `{actual}` under `{account}`, which is set up for `{expected}`")
+            log("this profile holds a different account's session -- re-run with --login to sign in as the right one")
+            return 1
+        log(f"confirmed the token belongs to `{actual}`")
 
     if args.print_token:
         print(token)
