@@ -14,6 +14,9 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
 use aes_gcm::{
     Aes256Gcm, Key, Nonce,
     aead::{Aead, KeyInit},
@@ -179,17 +182,46 @@ impl fmt::Display for Secret {
     }
 }
 
+/// Restrict a path to its owner, whatever mode it happened to be created with.
+///
+/// The store is the one place every credential octx knows is gathered, so the
+/// umask must not get a vote on who may open it: `fs::write` creates the file
+/// 0644 or 0664, leaving the ciphertext world-readable. Because `mode()` is
+/// ignored for an existing file, the restriction has to be applied afterwards
+/// rather than only at creation.
+fn restrict(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
+/// Write the store, then make sure only its owner can read it.
+fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
+    fs::write(path, bytes)?;
+    restrict(path)
+}
+
+/// Create the store directory, readable only by its owner.
+fn create_private_dir(dir: &Path) -> Result<()> {
+    fs::create_dir_all(dir)?;
+    #[cfg(unix)]
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+    Ok(())
+}
+
 /// An exclusive lock on `creds.lock`, released on drop.
 struct Lock(fs::File);
 
 impl Lock {
     fn acquire(path: &Path) -> Result<Self> {
-        let file = fs::OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .read(true)
-            .open(path)?;
+        #[allow(unused_mut)]
+        let mut options = fs::OpenOptions::new();
+        options.create(true).truncate(true).write(true).read(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let file = options.open(path)?;
         fs2::FileExt::lock_exclusive(&file)?;
         Ok(Lock(file))
     }
@@ -289,10 +321,13 @@ impl Store {
         if !path.exists() {
             return Ok(None);
         }
-        fs::create_dir_all(&self.dir)?;
+        create_private_dir(&self.dir)?;
         let _lock = Lock::acquire(&self.dir.join("creds.lock"))?;
         let backup = self.free_backup_path();
         fs::rename(&path, &backup)?;
+        // A store written before this was enforced would still be loose, and
+        // renaming preserves the mode, so the backup needs tightening too.
+        restrict(&backup)?;
         Ok(Some(backup))
     }
 
@@ -373,9 +408,9 @@ impl Store {
         output.extend_from_slice(&nonce_bytes);
         output.extend_from_slice(&ciphertext);
 
-        fs::create_dir_all(&self.dir)?;
+        create_private_dir(&self.dir)?;
         let _lock = Lock::acquire(&self.dir.join("creds.lock"))?;
-        fs::write(self.creds_path(), &output)?;
+        write_private(&self.creds_path(), &output)?;
         Ok(())
     }
 }
@@ -409,6 +444,57 @@ mod tests {
         store.add("github", "ghp_abc123").expect("add");
         assert_eq!(store.get("github").expect("get").expose(), "ghp_abc123");
         assert_eq!(store.hosts().expect("hosts"), vec!["github".to_string()]);
+    }
+
+    /// The store gathers every credential octx knows, so nothing about who can
+    /// open it may be left to the umask.
+    #[cfg(unix)]
+    #[test]
+    fn store_lock_and_directory_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempdir();
+        let store = store(dir.path(), "machine-a");
+        store.add("github", "ghp_abc123").expect("add");
+
+        let mode = |p: &Path| fs::metadata(p).expect("metadata").permissions().mode() & 0o777;
+        assert_eq!(
+            mode(&store.path()),
+            0o600,
+            "store must not be group/other readable"
+        );
+        assert_eq!(
+            mode(&dir.path().join("creds.lock")),
+            0o600,
+            "lock must not be group/other readable either"
+        );
+        assert_eq!(
+            mode(dir.path()),
+            0o700,
+            "directory must not be group/other readable"
+        );
+    }
+
+    /// A store written loose by an older octx is tightened rather than left as
+    /// found, since `mode()` is ignored for a file that already exists.
+    #[cfg(unix)]
+    #[test]
+    fn an_existing_loose_store_is_tightened_on_the_next_write() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempdir();
+        let store = store(dir.path(), "machine-a");
+        store.add("github", "ghp_abc123").expect("add");
+        fs::set_permissions(store.path(), fs::Permissions::from_mode(0o644)).expect("loosen");
+
+        store.add("gitlab", "glpat_abc").expect("add");
+
+        let mode = fs::metadata(store.path())
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
     }
 
     #[test]
