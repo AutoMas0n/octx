@@ -20,6 +20,10 @@ octx/
 │   │   └── skill.md        # AI agent skill definition
 │   ├── parse/
 │   └── deploy/
+├── tools/                  # Maintenance scripts (not arms; never shipped)
+│   ├── qobuz-token-harvest.py  # Mints jam's Qobuz token from a real login
+│   ├── harvest-docker.sh       # Runs it in Docker; nothing installed on the host
+│   └── Dockerfile.harvest      # Chromium image for that wrapper
 ├── registry-index.json     # Published with releases (registry manifest)
 ├── install.sh              # One-liner installer script
 ├── SKILL-CONTRACT.md       # What every arm's skill.md must contain
@@ -168,6 +172,36 @@ noninteractive = false
 ```
 
 Encrypted at `{config_dir}/octx/creds.enc` using a machine-ID derived key (argon2 + AES-256-GCM). The implementation lives in the shared `octx-creds` library (`crates/octx-creds`), which the head and every arm link — no component reimplements the crypto.
+
+### The `jam` credential document
+
+The store is a flat host → value map, so an arm that needs several related
+credentials stores one JSON *document* under a single host. `jam` reads host
+`jam` and selects one account from it:
+
+```json
+{"version": 1, "default": "jesse", "lastfm": {"api_key": "…"},
+ "accounts": {"jesse": {"lastfm": {"user": "…"},
+                        "listenbrainz": {"user": "…", "token": "…"},
+                        "qobuz": {"user_auth_token": "…"}}}}
+```
+
+`octx creds add` reads one line, so the document is stored minified.
+
+Qobuz issues no refresh token, and there is no browser-free login: the
+sign-in form is a plain POST behind an invisible Google reCAPTCHA, and
+replaying the API's `user/login` call returns the same opaque 401 for a real
+account and a nonexistent one alike. The `qobuz.user_auth_token` is therefore
+minted from a browser that is genuinely signed in, by
+[`tools/qobuz-token-harvest.py`](tools/qobuz-token-harvest.py). It drives the
+real form and reads the `X-User-Auth-Token` header off the player's own API
+traffic, then merges the token back into this document.
+
+Because the reCAPTCHA refuses a headless browser, sign-in needs a visible
+one. [`tools/harvest-docker.sh`](tools/harvest-docker.sh) supplies Chromium
+and a virtual display from a container, so a scheduler box needs only Docker
+— no root, no packages. The browser profile lives in a Docker named volume,
+so a run reuses the session and only signs in when it has died.
 
 ## Arm contract
 

@@ -1,0 +1,7 @@
+# Chromium for the Qobuz token harvester, without touching the host.
+#
+# The upstream Playwright image bakes in the browser builds but not the Python
+# bindings, so the package is added here once at build time rather than on
+# every run. Nothing needs installing on the host, and no root is required.
+FROM mcr.microsoft.com/playwright/python:v1.63.0-noble
+RUN pip install --no-cache-dir playwright==1.63.0
