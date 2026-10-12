@@ -13,12 +13,18 @@
 - [ ] 2.2 Document the ownership check in the same section: a token is refused unless the service confirms it belongs to the account.
 - [ ] 2.3 Document the scheduler shape — per-account harvest and run lines, and why concurrent runs must not share a container name.
 
-## 3. Decide on the mapping dependency (needs a decision, not just work)
+## 3. Forward the recording MBID — decided
 
-- [ ] 3.1 Establish whether the recommendation model actually requires **mapped** listens, by checking a real run after the daily snapshot.
-- [ ] 3.2 If it does: forward the MusicBrainz ID from the Last.fm payload when it carries one, so the common case does not depend on the asynchronous mapper.
-- [ ] 3.3 Whatever the outcome, make the skip distinguishable from "no model yet" in the scheduler's log, so a mapping lag is not an invisible no-op.
-- [ ] 3.4 Record the decision and its evidence in `design.md`.
+Decision and evidence in `design.md`. Last.fm's track-level `mbid` is a MusicBrainz **Recording** MBID (verified against MusicBrainz: `/recording/<id>` 200, `/track/<id>` and `/release/<id>` 404), which is the entity type ListenBrainz takes as `recording_mbid`. It is present on a large share of live scrobbles and is currently discarded.
+
+**Do not start this before the first end-to-end run is observed.** The pipeline has never completed once; changing the code under test before the one scheduled verification would discard the only clean result we can get today.
+
+- [ ] 3.1 Carry the track-level `mbid` through parsing: keep it alongside `#text` in the Last.fm text fields, and add it to the scrobble and listen shapes.
+- [ ] 3.2 Validate it as a UUID before sending, so a malformed or truncated value from the source is dropped rather than rejected by ListenBrainz mid-submission.
+- [ ] 3.3 Send it as `recording_mbid` on submission, omitting the field entirely when absent rather than sending an empty string.
+- [ ] 3.4 Confirm the mapper still requests no `extended` parameter — the track-level `mbid` is present without it.
+- [ ] 3.5 Test both directions: a payload with the MBID, one without, and one with an empty string, plus a submission that carries an ID and one that does not.
+- [ ] 3.6 Make the skip legible in the scheduler's own output, so "no model yet" and "run succeeded" are distinguishable without reading ListenBrainz's response codes.
 
 ## 4. Prove the removal path
 

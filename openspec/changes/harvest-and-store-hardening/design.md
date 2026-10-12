@@ -28,11 +28,19 @@ Nothing in the check can detect this. The mitigation is procedural: seed from a 
 
 The store lock covers a single write. A read-modify-write across two processes — read the document, merge, write it back — is not atomic, so two concurrent runs can lose one another's update. The impact is mild (an account keeps a stale token, which remains valid), but it is the reason scheduled runs are staggered rather than left to collide. A future change could expose a compare-and-set or a read-modify-write under one lock; not worth it now.
 
-### The model depends on an asynchronous mapper nobody controls
+### The model depends on an asynchronous mapper — and Last.fm hands us the IDs we discard
 
-`jam` sends listens without MusicBrainz IDs even though the Last.fm payload carries them for a minority of tracks. ListenBrainz's mapper fills them in on its own schedule, and the recommendation model is built from mapped listens. So the first useful run depends on a third party's queue having drained before a fixed daily snapshot.
+**Resolved: forward the recording MBID when the source provides one.** Measured, not assumed.
 
-When it has not drained, nothing looks broken: the status check exits non-zero, the scheduled run is skipped by its guard, and no playlist appears. That is the correct behaviour — writing an empty or partial playlist would be worse — but it is indistinguishable from "the model does not exist yet". Making those two states tell themselves apart matters more than eliminating the dependency.
+Last.fm's `user.getRecentTracks` carries a track-level `mbid` in addition to `artist.mbid` and `album.mbid`. The top-level value is a **MusicBrainz Recording MBID** — confirmed by resolving one against MusicBrainz (`/recording/<id>` returns 200; `/track/<id>` and `/release/<id>` return 404). That is precisely the entity type ListenBrainz accepts as `recording_mbid`.
+
+Coverage on live data: 31 of 32 of one account's scrobbles carried it, 29 of 87 of the other's. So it is neither universal nor negligible.
+
+`jam` currently throws the value away at three separate points: the `Text` enum keeps only `#text` and drops the `mbid` beside it, the `Scrobble` struct has no field for a track-level `mbid`, and the listen sent to ListenBrainz carries only `recording_msid`. The value never reaches the wire.
+
+Forwarding it converts a queue-dependent outcome into a deterministic one for every track that has one, and costs nothing — the field arrives in the response `jam` already parses, so no extra request and no `extended` parameter is involved (which the mapper is documented never to request).
+
+**It is a mitigation, not a cure.** Where the MBID is absent, ListenBrainz's own mapper must still match on artist, title and release, on its own schedule. The gap that remains is not the mapping itself but the *silence*: when no model exists, the status check exits non-zero, the scheduler's guard skips the run, and no playlist appears. That is correct — an empty or partial playlist would be worse — but it is indistinguishable from "the model does not exist yet", and it is the thing worth making legible.
 
 ## Deferred
 
