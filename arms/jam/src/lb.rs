@@ -496,7 +496,7 @@ impl JspfTrack {
     fn into_entry(self) -> Option<Entry> {
         let recording_mbid = self.identifier?.recording_mbid()?;
         Some(Entry {
-            recording_mbid,
+            recording_mbid: Some(recording_mbid),
             title: self.title.unwrap_or_default(),
             artist_credit: self.creator.unwrap_or_default(),
             album: self.album.filter(|album| !album.is_empty()),
@@ -602,8 +602,8 @@ mod tests {
         assert_eq!(entries[0].album.as_deref(), Some("A Night at the Opera"));
         assert_eq!(entries[0].duration_ms, Some(356_000));
         assert_eq!(
-            entries[0].recording_mbid,
-            "df3543df-dd02-4415-a92b-15ee3e3da451"
+            entries[0].recording_mbid.as_deref(),
+            Some("df3543df-dd02-4415-a92b-15ee3e3da451")
         );
     }
 

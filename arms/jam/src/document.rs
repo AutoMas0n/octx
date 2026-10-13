@@ -44,8 +44,10 @@ pub struct Provenance {
 /// needs no re-plumbing).
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Entry {
-    /// MusicBrainz recording id.
-    pub recording_mbid: String,
+    /// MusicBrainz recording id, when the source supplied one. Sources that
+    /// have no identifiers of their own leave this unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recording_mbid: Option<String>,
     /// Track title.
     pub title: String,
     /// Artist credit, as one string.
@@ -209,7 +211,7 @@ mod tests {
             },
             vec![
                 Entry {
-                    recording_mbid: "a".to_string(),
+                    recording_mbid: Some("a".to_string()),
                     title: "first".to_string(),
                     artist_credit: "one".to_string(),
                     album: None,
@@ -218,7 +220,7 @@ mod tests {
                     latest_listened_at: None,
                 },
                 Entry {
-                    recording_mbid: "b".to_string(),
+                    recording_mbid: Some("b".to_string()),
                     title: "second".to_string(),
                     artist_credit: "two".to_string(),
                     album: Some("release".to_string()),
@@ -236,6 +238,31 @@ mod tests {
         assert_eq!(value["entries"][1]["title"], "second");
         // Absent optional fields stay absent rather than becoming null.
         assert!(value["entries"][0].get("album").is_none());
+    }
+
+    #[test]
+    fn an_entry_without_a_recording_mbid_still_carries_its_title_and_artist() {
+        let doc = PlaylistDocument::new(
+            Provenance {
+                source: "discover".to_string(),
+                ..Provenance::default()
+            },
+            vec![Entry {
+                recording_mbid: None,
+                title: "Bitter".to_string(),
+                artist_credit: "Fletcher".to_string(),
+                album: None,
+                duration_ms: None,
+                score: None,
+                latest_listened_at: None,
+            }],
+        );
+
+        let value: serde_json::Value = serde_json::to_value(&doc).expect("serialize");
+        // A source with no identifiers yields no identifier key at all.
+        assert!(value["entries"][0].get("recording_mbid").is_none());
+        assert_eq!(value["entries"][0]["title"], "Bitter");
+        assert_eq!(value["entries"][0]["artist_credit"], "Fletcher");
     }
 
     #[test]

@@ -183,7 +183,11 @@ impl Ctx<'_> {
                     })
                     .collect();
                 for entry in &mut entries {
-                    if let Some((score, latest)) = ranking.get(entry.recording_mbid.as_str()) {
+                    let ranked = entry
+                        .recording_mbid
+                        .as_deref()
+                        .and_then(|mbid| ranking.get(mbid));
+                    if let Some((score, latest)) = ranked {
                         entry.score = *score;
                         entry.latest_listened_at = *latest;
                     }
@@ -194,7 +198,10 @@ impl Ctx<'_> {
                     .map(|(index, item)| (item.recording_mbid.as_str(), index))
                     .collect();
                 entries.sort_by_key(|entry| {
-                    rank.get(entry.recording_mbid.as_str())
+                    entry
+                        .recording_mbid
+                        .as_deref()
+                        .and_then(|mbid| rank.get(mbid))
                         .copied()
                         .unwrap_or(usize::MAX)
                 });
