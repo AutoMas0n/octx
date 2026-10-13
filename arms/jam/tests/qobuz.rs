@@ -652,3 +652,41 @@ fn the_qobuz_credential_is_required_and_named_before_any_request() {
     );
     assert_eq!(qobuz.count(), 0, "no Qobuz request without a credential");
 }
+
+// ------------------------------------------------------- entries without MBIDs
+
+// The sink is reached through its public surface here rather than the binary:
+// no subcommand produces an entry without a recording MBID yet, so the
+// contract that resolution never depended on one is asserted where it lives.
+
+#[tokio::test]
+async fn an_entry_without_an_mbid_resolves_by_artist_and_title() {
+    let (qobuz, fake) = qobuz(vec![("Fletcher", "Bitter", "101")]);
+
+    let mut cfg = octx_jam::config::Config::default();
+    cfg.qobuz_api = qobuz.base.clone();
+    let http = octx_jam::http::Http::new(cfg).expect("build an HTTP client");
+    let client = octx_jam::qobuz::Client::new(&http, "qz-token", None);
+
+    let entries = vec![octx_jam::document::Entry {
+        recording_mbid: None,
+        title: "Bitter".to_string(),
+        artist_credit: "Fletcher".to_string(),
+        album: None,
+        duration_ms: None,
+        score: None,
+        latest_listened_at: None,
+    }];
+
+    octx_jam::sync::sync(&client, &entries, Some("Jams"), "discover", false)
+        .await
+        .expect("sync an entry with no MBID");
+
+    // The search carried the artist and title, and the track was resolved.
+    let searches = qobuz.route("/track/search");
+    assert_eq!(searches.len(), 1, "one search per entry");
+    let query = searches[0].query("query").unwrap_or_default();
+    assert!(query.contains("Fletcher"), "{query}");
+    assert!(query.contains("Bitter"), "{query}");
+    assert_eq!(fake.tracks("Jams"), vec!["101"]);
+}

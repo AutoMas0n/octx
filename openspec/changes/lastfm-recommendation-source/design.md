@@ -70,7 +70,7 @@ Pruning runs only after a delivery succeeds, so a failed run leaves extra playli
 ## Risks / Trade-offs
 
 - **[A young account produces narrow picks]** → Mitigation: none available; the alternative is no result at all. Picks widen as listening accumulates. This is why the result is spread across seeds.
-- **[Unbounded playlist growth on the account]** → Mitigation: names are deterministic and deletable, and each is self-describing. Pruning is deferred (see Open Questions).
+- **[Unbounded playlist growth on the account]** → Mitigation: names are deterministic, each is self-describing, and the retention rule removes all but the newest ten by default. The cost is a slow accumulation only for runs that opt out of pruning.
 - **[More upstream calls than the LB sources make]** → Mitigation: bound both the seed count and the per-seed fan-out, reuse the existing client and its page limits, and let the existing rate-limit reporting handle Last.fm's error. A run must not be permitted to loop unboundedly over seeds.
 - **[The existing `defaults_differ_per_source` test and `default_playlist` signature both change]** → Mitigation: the test is extended to cover the discovery default, and the signature change is a compile-time break the compiler will surface at every call site.
 - **[A date-stamped default could surprise a scheduled line that also passes `--playlist`]** → Mitigation: an explicit target always wins and is never date-modified; this is covered by a scenario.

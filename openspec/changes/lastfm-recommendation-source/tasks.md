@@ -4,7 +4,7 @@
 
 - [x] 1.1 Make the entry's recording MBID optional in `arms/jam/src/document.rs` and update every construction and read site so the workspace compiles — verify `cargo check` succeeds and `cargo clippy -- -D warnings` is clean.
 - [x] 1.2 Extend the document and JSON-sink tests to cover an entry that carries no MBID, alongside the existing entries that do — verify `cargo test` passes and the new case is exercised.
-- [ ] 1.3 Confirm the Qobuz sink needs nothing for these entries by adding a resolution test for an entry with no MBID, matched on artist and title — verify the test passes and the resolved set contains the expected track.
+- [x] 1.3 Confirm the Qobuz sink needs nothing for these entries by adding a resolution test for an entry with no MBID, matched on artist and title — verify the test passes and the resolved set contains the expected track.
 
 ## 2. Last.fm read endpoints
 
