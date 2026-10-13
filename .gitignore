@@ -2,3 +2,7 @@
 
 # local UX test scratch
 .ux/
+
+# the harvest container runs the tools in place and leaves these behind
+__pycache__/
+*.pyc
