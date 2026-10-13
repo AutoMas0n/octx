@@ -978,6 +978,10 @@ fn a_lastfm_api_error_is_surfaced() {
     );
     output.failed();
     output.stderr_has("Invalid API key");
+    assert!(
+        lb.route(SUBMIT_ROUTE).is_empty(),
+        "an error page must not be submitted"
+    );
 }
 
 #[test]

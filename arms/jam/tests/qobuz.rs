@@ -663,8 +663,10 @@ fn the_qobuz_credential_is_required_and_named_before_any_request() {
 async fn an_entry_without_an_mbid_resolves_by_artist_and_title() {
     let (qobuz, fake) = qobuz(vec![("Fletcher", "Bitter", "101")]);
 
-    let mut cfg = octx_jam::config::Config::default();
-    cfg.qobuz_api = qobuz.base.clone();
+    let cfg = octx_jam::config::Config {
+        qobuz_api: qobuz.base.clone(),
+        ..octx_jam::config::Config::default()
+    };
     let http = octx_jam::http::Http::new(cfg).expect("build an HTTP client");
     let client = octx_jam::qobuz::Client::new(&http, "qz-token", None);
 

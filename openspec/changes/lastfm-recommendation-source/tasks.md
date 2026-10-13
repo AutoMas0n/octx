@@ -8,9 +8,9 @@
 
 ## 2. Last.fm read endpoints
 
-- [ ] 2.1 Add client methods for the account's top artists, an artist's similar artists, an artist's top tracks, and the account's existing tracks, reusing the existing escaping, paging, and optional-field handling in `arms/jam/src/lastfm.rs` — verify a unit test parses a representative payload for each method.
-- [ ] 2.2 Handle Last.fm returning a lone result as an object instead of a one-element array, with a fixture test for the single-item shape of each list — verify the tests fail when the one-element case is treated as an array.
-- [ ] 2.3 Propagate Last.fm error and rate-limit answers through the existing reporting path rather than a new one — verify a test asserting a non-success answer produces an error naming Last.fm and writes nothing.
+- [x] 2.1 Add client methods for the account's top artists, an artist's similar artists, an artist's top tracks, and the account's existing tracks, reusing the existing escaping, paging, and optional-field handling in `arms/jam/src/lastfm.rs` — verify a unit test parses a representative payload for each method.
+- [x] 2.2 Handle Last.fm returning a lone result as an object instead of a one-element array, with a fixture test for the single-item shape of each list — verify the tests fail when the one-element case is treated as an array.
+- [x] 2.3 Propagate Last.fm error and rate-limit answers through the existing reporting path rather than a new one — verify a test asserting a non-success answer produces an error naming Last.fm and writes nothing.
 
 ## 3. The discovery source
 
