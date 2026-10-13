@@ -9,6 +9,7 @@
 pub mod cli;
 pub mod config;
 pub mod credentials;
+pub mod discover;
 pub mod document;
 pub mod http;
 pub mod lastfm;

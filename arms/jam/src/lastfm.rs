@@ -213,6 +213,36 @@ pub async fn existing_tracks(
     Ok(tracks_of(fetched.listens))
 }
 
+/// The tracks most often tagged with one Last.fm tag, most popular first.
+///
+/// A prompt cannot be free text: Last.fm's search matches literal names, so a
+/// prompt like `chillwave` would find tracks called "chillwave" rather than
+/// music of that character. Tags are the closest thing Last.fm has to a genre
+/// index, and this endpoint reads one directly.
+pub async fn tag_top_tracks(
+    http: &Http,
+    api_key: &str,
+    tag: &str,
+    limit: usize,
+) -> Result<Vec<Track>> {
+    let params = [("tag", tag.to_string())];
+    let items: Vec<TrackItem> =
+        page_through::<TracksPage, _>(http, api_key, "tag.getTopTracks", &params, limit, |value| {
+            value.get("tracks").cloned()
+        })
+        .await?;
+    Ok(items
+        .into_iter()
+        .filter_map(|item| {
+            let title = item.name?;
+            Some(Track {
+                artist: item.artist.and_then(Text::into_string).unwrap_or_default(),
+                title,
+            })
+        })
+        .collect())
+}
+
 /// Map listens to the artist-and-title pairs exclusion matches on.
 fn tracks_of(listens: Vec<Listen>) -> Vec<Track> {
     listens
@@ -803,6 +833,41 @@ mod tests {
                 artist: "Princess Goes".to_string(),
                 title: "Eat an Eraser".to_string()
             }]
+        );
+    }
+
+    #[test]
+    fn tag_top_tracks_map_to_tracks() {
+        // Pinned against the live `tag.getTopTracks` shape.
+        let body = r##"{
+            "tracks": {
+                "track": [
+                    {
+                        "name": "Genesis",
+                        "artist": {"name": "Grimes"},
+                        "@attr": {"rank": "1"}
+                    },
+                    {
+                        "name": "Oblivion",
+                        "artist": {"name": "Grimes"},
+                        "@attr": {"rank": "2"}
+                    }
+                ],
+                "@attr": {"page": "1", "perPage": "50", "totalPages": "1", "total": "2"}
+            }
+        }"##;
+        assert_eq!(
+            tracks(body, "tracks"),
+            vec![
+                Track {
+                    artist: "Grimes".to_string(),
+                    title: "Genesis".to_string()
+                },
+                Track {
+                    artist: "Grimes".to_string(),
+                    title: "Oblivion".to_string()
+                }
+            ]
         );
     }
 

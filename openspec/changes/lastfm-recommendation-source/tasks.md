@@ -14,12 +14,12 @@
 
 ## 3. The discovery source
 
-- [ ] 3.1 Build seed expansion from top artists through similar artists to top tracks, bounded by an explicit cap on seeds and on per-seed fan-out — verify a test where the input exceeds the cap stays within it and makes no unbounded calls.
-- [ ] 3.2 Draw candidates across seeds rather than exhausting one seed first — verify a test where the first seed alone could fill the result still returns entries from more than one seed.
-- [ ] 3.3 Exclude tracks the account has already scrobbled, matched case-insensitively on artist and title, using a set read once per run — verify a test asserting an already-scrobbled candidate is absent and that the known-track reads happen once.
-- [ ] 3.4 Treat an account with no scrobbles as a source with nothing to give — verify a test asserting no document is produced, the message names Last.fm, and no sink is invoked.
-- [ ] 3.5 Accept a seed artist, fanning out through similar artists instead of returning that artist alone, and replacing the account's own artists as seeds — verify a test where one seed yields entries from more than one similar artist.
-- [ ] 3.6 Accept a prompt resolved through Last.fm tags, reading the tag rather than the account's own tags — verify a tag-seeded run returns entries for that tag, and that an account with no top tags still produces a result.
+- [x] 3.1 Build seed expansion from top artists through similar artists to top tracks, bounded by an explicit cap on seeds and on per-seed fan-out — verify a test where the input exceeds the cap stays within it and makes no unbounded calls.
+- [x] 3.2 Draw candidates across seeds rather than exhausting one seed first — verify a test where the first seed alone could fill the result still returns entries from more than one seed.
+- [x] 3.3 Exclude tracks the account has already scrobbled, matched case-insensitively on artist and title, using a set read once per run — verify a test asserting an already-scrobbled candidate is absent and that the known-track reads happen once.
+- [x] 3.4 Treat an account with no scrobbles as a source with nothing to give — verify a test asserting no document is produced, the message names Last.fm, and no sink is invoked.
+- [x] 3.5 Accept a seed artist, fanning out through similar artists instead of returning that artist alone, and replacing the account's own artists as seeds — verify a test where one seed yields entries from more than one similar artist.
+- [x] 3.6 Accept a prompt resolved through Last.fm tags, reading the tag rather than the account's own tags — verify a tag-seeded run returns entries for that tag, and that an account with no top tags still produces a result.
 
 ## 4. CLI, orchestration, and the dated default
 
