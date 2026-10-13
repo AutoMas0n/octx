@@ -17,7 +17,7 @@ use crate::config::Config;
 use crate::credentials::{self, Selected};
 use crate::document::{ListenDocument, PlaylistDocument, Provenance};
 use crate::http::Http;
-use crate::{lastfm, lb, qobuz, scrobble, sink, sync};
+use crate::{discover, lastfm, lb, qobuz, scrobble, sink, sync};
 
 /// Run one invocation.
 pub async fn run(cli: Cli, cfg: Config) -> Result<()> {
@@ -34,6 +34,9 @@ pub async fn run(cli: Cli, cfg: Config) -> Result<()> {
         store: &store,
         account: account.as_deref(),
         user: user.as_deref(),
+        // The date is read once here and passed down, so a run that crosses
+        // midnight UTC still targets the one playlist it started on.
+        date: today(),
     };
 
     match command {
@@ -70,8 +73,31 @@ pub async fn run(cli: Cli, cfg: Config) -> Result<()> {
                 .scrobble(source, input.as_deref(), limit, output)
                 .await
         }
+        Command::Discover {
+            count,
+            output,
+            playlist,
+            seed_artist,
+            prompt,
+            dry_run,
+            ..
+        } => {
+            let document = context
+                .discover_document(count, seed_artist.as_deref(), prompt.as_deref())
+                .await?;
+            context
+                .deliver_playlist(document, output, playlist.as_deref(), dry_run)
+                .await
+        }
         Command::Status => context.status().await,
     }
+}
+
+/// The run's date in UTC, as `YYYY-MM-DD`, for the dated discovery default.
+fn today() -> String {
+    chrono::DateTime::<chrono::Utc>::from(std::time::SystemTime::now())
+        .format("%Y-%m-%d")
+        .to_string()
 }
 
 /// Open the credential store, honouring the test hook when one was set.
@@ -91,6 +117,8 @@ struct Ctx<'a> {
     store: &'a Store,
     account: Option<&'a str>,
     user: Option<&'a str>,
+    /// The run's UTC date, computed once so every name derives from it.
+    date: String,
 }
 
 impl Ctx<'_> {
@@ -224,6 +252,56 @@ impl Ctx<'_> {
                 "ListenBrainz does not know the user `{user}`\n  check the ListenBrainz account \
                  name in the credential document (`{user}`) and in `--user`"
             ),
+        }
+    }
+
+    /// The read side, from Last.fm's similarity data.
+    ///
+    /// This source reads only the shared Last.fm API key and the selected
+    /// account's Last.fm user; it never asks for a ListenBrainz credential.
+    async fn discover_document(
+        &self,
+        count: Option<usize>,
+        seed_artist: Option<&str>,
+        prompt: Option<&str>,
+    ) -> Result<PlaylistDocument> {
+        let mut slot = None;
+        let selected = self.selected(&mut slot)?;
+        let api_key = selected
+            .lastfm_api_key
+            .clone()
+            .ok_or_else(|| credentials::missing("lastfm.api_key"))?;
+        let user = match self.user {
+            Some(user) => user.to_string(),
+            None => selected
+                .require(selected.lastfm_user(), "lastfm.user")?
+                .to_string(),
+        };
+
+        let seed = match (seed_artist, prompt) {
+            (Some(artist), None) => discover::Seed::Artist(artist.to_string()),
+            (None, Some(tag)) => discover::Seed::Tag(tag.to_string()),
+            (None, None) => discover::Seed::Account,
+            (Some(_), Some(_)) => bail!(
+                "`--seed-artist` and `--prompt` cannot both be given\n  \
+                 a run seeds from one thing: an artist, a tag, or the account"
+            ),
+        };
+
+        match discover::discover(self.http, &api_key, &user, &seed, count).await? {
+            discover::Discovered::Ready(entries) if !entries.is_empty() => {
+                Ok(PlaylistDocument::new(
+                    Provenance {
+                        source: "discover".to_string(),
+                        user: Some(user),
+                        ..Provenance::default()
+                    },
+                    entries,
+                ))
+            }
+            // Nothing to seed from, or every seed came back empty: the same
+            // remedy applies, and no sink may be reached.
+            _ => bail!("{}", discover::no_listening(&user)),
         }
     }
 
@@ -448,6 +526,7 @@ impl Ctx<'_> {
                     &document.entries,
                     requested,
                     &document.source.source,
+                    &self.date,
                     dry_run,
                 )
                 .await?;

@@ -47,6 +47,38 @@ pub enum Command {
         dry_run: bool,
     },
 
+    /// Fetch Last.fm-seeded recommendations
+    #[command(override_usage = "jam discover --output <json|qobuz> [OPTIONS]")]
+    Discover {
+        /// How many entries to ask for (default 25, maximum 100)
+        #[arg(long)]
+        count: Option<usize>,
+
+        /// Where the playlist document goes
+        #[arg(long, value_enum)]
+        output: PlaylistSink,
+
+        /// Target playlist name or id (qobuz sink)
+        #[arg(long)]
+        playlist: Option<String>,
+
+        /// Seed from this artist instead of the account's own listening
+        #[arg(long, value_name = "ARTIST", conflicts_with = "prompt")]
+        seed_artist: Option<String>,
+
+        /// Seed from this Last.fm tag instead of the account's own listening
+        #[arg(long, value_name = "TAG")]
+        prompt: Option<String>,
+
+        /// Keep every discovery playlist, removing none
+        #[arg(long)]
+        keep: bool,
+
+        /// Report the changes that would be made without making them
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// Fetch an LB Radio playlist for a prompt
     #[command(
         override_usage = "jam radio --prompt <PROMPT> --mode <easy|medium|hard> --output <json|qobuz> [OPTIONS]"

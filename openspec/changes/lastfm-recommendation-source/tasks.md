@@ -23,10 +23,10 @@
 
 ## 4. CLI, orchestration, and the dated default
 
-- [ ] 4.1 Add the `discover` subcommand with count, output, playlist, account, seed-artist, prompt, and keep options in `arms/jam/src/cli.rs` — verify `--help` lists the subcommand and its options and the existing usage tests still pass.
-- [ ] 4.2 Wire the source in `arms/jam/src/run.rs` so it reads the shared Last.fm API key and the selected account's Last.fm user only — verify a test asserting the run completes with no ListenBrainz credential present and never requests one.
-- [ ] 4.3 Make the default playlist name source-aware in shape in `arms/jam/src/sync.rs`, date-stamped in UTC for the discovery source — verify unit tests for the produced name, that the `recs` and `radio` defaults are unchanged, and that an explicit `--playlist` is used verbatim with no date added.
-- [ ] 4.4 Compute the run's date once and pass it down, so a run spanning midnight UTC still targets one playlist — verify a test deriving the name from a single supplied date rather than a repeated lookup.
+- [x] 4.1 Add the `discover` subcommand with count, output, playlist, account, seed-artist, prompt, and keep options in `arms/jam/src/cli.rs` — verify `--help` lists the subcommand and its options and the existing usage tests still pass.
+- [x] 4.2 Wire the source in `arms/jam/src/run.rs` so it reads the shared Last.fm API key and the selected account's Last.fm user only — verify a test asserting the run completes with no ListenBrainz credential present and never requests one.
+- [x] 4.3 Make the default playlist name source-aware in shape in `arms/jam/src/sync.rs`, date-stamped in UTC for the discovery source — verify unit tests for the produced name, that the `recs` and `radio` defaults are unchanged, and that an explicit `--playlist` is used verbatim with no date added.
+- [x] 4.4 Compute the run's date once and pass it down, so a run spanning midnight UTC still targets one playlist — verify a test deriving the name from a single supplied date rather than a repeated lookup.
 
 ## 5. Discovery playlist retention
 

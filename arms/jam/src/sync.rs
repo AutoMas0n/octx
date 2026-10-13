@@ -12,11 +12,17 @@ use crate::document::Entry;
 use crate::qobuz::Client;
 
 /// The default target for a source.
+///
+/// `recs` and `radio` keep their fixed names. The discovery source's name
+/// carries the run's UTC date, so each day's run targets that day's playlist and
+/// a same-day re-run converges on the same one. The date is passed in rather
+/// than read here, so a run that spans midnight still targets one playlist.
 #[must_use]
-pub fn default_playlist(source: &str) -> &'static str {
+pub fn default_playlist(source: &str, date: &str) -> String {
     match source {
-        "radio" => "ListenBrainz Radio",
-        _ => "ListenBrainz Discovery",
+        "radio" => "ListenBrainz Radio".to_string(),
+        "discover" => format!("Last.fm Discovery {date}"),
+        _ => "ListenBrainz Discovery".to_string(),
     }
 }
 
@@ -94,9 +100,10 @@ pub async fn sync(
     entries: &[Entry],
     requested: Option<&str>,
     source: &str,
+    date: &str,
     dry_run: bool,
 ) -> Result<Summary> {
-    let (playlist_id, target, created) = resolve_target(client, requested, source).await?;
+    let (playlist_id, target, created) = resolve_target(client, requested, source, date).await?;
 
     // Resolve every entry; a miss or a failed search is reported and skipped,
     // never fatal — one entry must not cost the rest of the run.
@@ -166,6 +173,7 @@ async fn resolve_target(
     client: &Client<'_>,
     requested: Option<&str>,
     source: &str,
+    date: &str,
 ) -> Result<(String, String, bool)> {
     // A bare number is an identifier: it needs no lookup and no creation.
     if let Some(value) = requested
@@ -175,18 +183,20 @@ async fn resolve_target(
         return Ok((value.to_string(), value.to_string(), false));
     }
 
-    let name = requested.unwrap_or_else(|| default_playlist(source));
+    let name = requested
+        .map(str::to_string)
+        .unwrap_or_else(|| default_playlist(source, date));
     if let Some(found) = client
         .owned_playlists()
         .await?
         .into_iter()
         .find(|playlist| playlist.name == name)
     {
-        return Ok((found.id, name.to_string(), false));
+        return Ok((found.id, name.clone(), false));
     }
 
-    let id = client.create_playlist(name).await?;
-    Ok((id, name.to_string(), true))
+    let id = client.create_playlist(&name).await?;
+    Ok((id, name, true))
 }
 
 #[cfg(test)]
@@ -226,7 +236,31 @@ mod tests {
 
     #[test]
     fn defaults_differ_per_source() {
-        assert_ne!(default_playlist("recs"), default_playlist("radio"));
+        let date = "2025-10-13";
+        assert_ne!(
+            default_playlist("recs", date),
+            default_playlist("radio", date)
+        );
+    }
+
+    #[test]
+    fn the_discovery_default_carries_the_run_date() {
+        assert_eq!(
+            default_playlist("discover", "2025-10-13"),
+            "Last.fm Discovery 2025-10-13"
+        );
+    }
+
+    #[test]
+    fn the_fixed_defaults_ignore_the_date() {
+        assert_eq!(
+            default_playlist("recs", "2025-10-13"),
+            "ListenBrainz Discovery"
+        );
+        assert_eq!(
+            default_playlist("radio", "2025-10-13"),
+            "ListenBrainz Radio"
+        );
     }
 
     #[test]

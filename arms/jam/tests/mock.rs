@@ -393,7 +393,7 @@ fn help_lists_every_subcommand_and_both_sink_families() {
     let store = Store::with_document(None);
     let output = jam(&store, &[], &["--help"]);
     output.ok();
-    for expected in ["recs", "radio", "scrobble", "status"] {
+    for expected in ["recs", "discover", "radio", "scrobble", "status"] {
         assert!(output.stdout.contains(expected), "{}", output.stdout);
     }
     let qobuz = jam(&store, &[], &["recs", "--help"]);
@@ -407,6 +407,18 @@ fn help_lists_every_subcommand_and_both_sink_families() {
         "{}",
         listening.stdout
     );
+
+    // The discovery subcommand documents its own seeds and retention switch,
+    // so its help stands alone.
+    let discovery = jam(&store, &[], &["discover", "--help"]);
+    discovery.ok();
+    for expected in ["--seed-artist", "--prompt", "--keep", "--count", "Last.fm"] {
+        assert!(
+            discovery.stdout.contains(expected),
+            "help must mention {expected}: {}",
+            discovery.stdout
+        );
+    }
 }
 
 #[test]

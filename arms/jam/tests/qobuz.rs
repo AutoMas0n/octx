@@ -680,9 +680,16 @@ async fn an_entry_without_an_mbid_resolves_by_artist_and_title() {
         latest_listened_at: None,
     }];
 
-    octx_jam::sync::sync(&client, &entries, Some("Jams"), "discover", false)
-        .await
-        .expect("sync an entry with no MBID");
+    octx_jam::sync::sync(
+        &client,
+        &entries,
+        Some("Jams"),
+        "discover",
+        "2025-10-13",
+        false,
+    )
+    .await
+    .expect("sync an entry with no MBID");
 
     // The search carried the artist and title, and the track was resolved.
     let searches = qobuz.route("/track/search");
