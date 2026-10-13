@@ -21,7 +21,7 @@ DISPLAY_NUM="${HARVEST_DISPLAY:-:99}"
 
 # One browser profile per account. A profile holds a single signed-in Qobuz
 # session, so a shared one would let `--account sam` reuse Jesse's session and
-# store *his* token under her name. Separate volumes keep the sessions apart.
+# store *his* token under her name. Separate directories keep the sessions apart.
 ACCOUNT=""
 prev=""
 for arg in "$@"; do
@@ -29,7 +29,7 @@ for arg in "$@"; do
     case "$arg" in --account=*) ACCOUNT="${arg#--account=}" ;; esac
     prev="$arg"
 done
-PROFILE_VOLUME="${HARVEST_PROFILE_VOLUME:-octx-qobuz-profile-${ACCOUNT:-default}}"
+PROFILE_DIR="${HARVEST_PROFILE_DIR:-${HOME}/.local/share/octx-qobuz-profiles/${ACCOUNT:-default}}"
 
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
     echo "building $IMAGE (first run only)..." >&2
@@ -37,10 +37,14 @@ if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
 fi
 
 mkdir -p "$OUT"
-docker volume create "$PROFILE_VOLUME" >/dev/null
 
-# The browser profile lives in a named volume: the container runs as root, and
-# a bind-mounted profile would leave root-owned files on the host.
+# The browser profile lives in a host directory, not a named volume. A volume
+# is invisible to the host and unattached ~23h a day, so a `docker system
+# prune --volumes` anywhere on this box would silently delete a signed-in
+# Qobuz session — and re-signing-in means beating a Google reCAPTCHA. A bind
+# mount cannot be pruned. The trade-off is root-owned files in $PROFILE_DIR,
+# which is fine: only the container ever reads them.
+mkdir -p "$PROFILE_DIR"
 # No --name: two accounts are refreshed from the same crontab, and a fixed
 # name means the second `docker run` dies with "name already in use". Docker's
 # generated name is unique, and --rm cleans up regardless.
@@ -52,7 +56,7 @@ exec docker run --rm \
     -v "${HOME}/.local/bin/octx:/usr/local/bin/octx:ro" \
     -v "${TOOLS}:/work:ro" \
     -v "${OUT}:/out" \
-    -v "${PROFILE_VOLUME}:/profile" \
+    -v "${PROFILE_DIR}:/profile" \
     "$IMAGE" \
     bash -c '
         Xvfb '"${DISPLAY_NUM}"' -screen 0 1440x900x24 -nolisten tcp >/tmp/xvfb.log 2>&1 &
