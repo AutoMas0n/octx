@@ -30,10 +30,10 @@
 
 ## 5. Discovery playlist retention
 
-- [ ] 5.1 Add playlist listing and deletion to the Qobuz client, kept separate from the existing track-diff path — verify tests covering a successful delete and an error answer, and that existing sync tests are unchanged.
-- [ ] 5.2 Prune to the configured limit after a successful delivery, selecting candidates only by an exact match on the discovery naming pattern — verify tests asserting the newest ten survive, that other playlists including the `recs` and `radio` defaults are untouched, and that the run's own playlist is never removed.
-- [ ] 5.3 Add the keep-everything option and skip pruning entirely when it is set — verify a test asserting no delete is attempted.
-- [ ] 5.4 Ensure pruning never runs when delivery fails — verify a test asserting no delete is attempted on a failed delivery.
+- [x] 5.1 Add playlist listing and deletion to the Qobuz client, kept separate from the existing track-diff path — verify tests covering a successful delete and an error answer, and that existing sync tests are unchanged.
+- [x] 5.2 Prune to the configured limit after a successful delivery, selecting candidates only by an exact match on the discovery naming pattern — verify tests asserting the newest ten survive, that other playlists including the `recs` and `radio` defaults are untouched, and that the run's own playlist is never removed.
+- [x] 5.3 Add the keep-everything option and skip pruning entirely when it is set — verify a test asserting no delete is attempted.
+- [x] 5.4 Ensure pruning never runs when delivery fails — verify a test asserting no delete is attempted on a failed delivery.
 
 ## 6. Skill and help documentation
 

@@ -47,8 +47,9 @@ pub async fn run(cli: Cli, cfg: Config) -> Result<()> {
             dry_run,
         } => {
             let document = context.recs_document(count).await?;
+            // `recs` has no retention step, so keep-everything is moot.
             context
-                .deliver_playlist(document, output, playlist.as_deref(), dry_run)
+                .deliver_playlist(document, output, playlist.as_deref(), dry_run, true)
                 .await
         }
         Command::Radio {
@@ -60,7 +61,7 @@ pub async fn run(cli: Cli, cfg: Config) -> Result<()> {
         } => {
             let document = context.radio_document(&prompt, mode).await?;
             context
-                .deliver_playlist(document, output, playlist.as_deref(), dry_run)
+                .deliver_playlist(document, output, playlist.as_deref(), dry_run, true)
                 .await
         }
         Command::Scrobble {
@@ -79,14 +80,14 @@ pub async fn run(cli: Cli, cfg: Config) -> Result<()> {
             playlist,
             seed_artist,
             prompt,
+            keep,
             dry_run,
-            ..
         } => {
             let document = context
                 .discover_document(count, seed_artist.as_deref(), prompt.as_deref())
                 .await?;
             context
-                .deliver_playlist(document, output, playlist.as_deref(), dry_run)
+                .deliver_playlist(document, output, playlist.as_deref(), dry_run, keep)
                 .await
         }
         Command::Status => context.status().await,
@@ -503,12 +504,17 @@ impl Ctx<'_> {
     }
 
     /// Hand a playlist document to the sink the caller selected.
+    ///
+    /// `keep_all` is the discovery retention switch: when it is set, no older
+    /// discovery playlist is removed. It is ignored by sinks and sources that
+    /// have no retention step.
     async fn deliver_playlist(
         &self,
         document: PlaylistDocument,
         sink: PlaylistSink,
         requested: Option<&str>,
         dry_run: bool,
+        keep_all: bool,
     ) -> Result<()> {
         match sink {
             PlaylistSink::Json => sink::write_playlist(&document),
@@ -531,6 +537,20 @@ impl Ctx<'_> {
                 )
                 .await?;
                 eprintln!("jam: {}", summary.line());
+
+                // Retention runs only for the discovery source, only after the
+                // delivery above succeeded, and never on a dry run — a failed
+                // or rehearsed run must not remove a single playlist.
+                if document.source.source == "discover" && !keep_all && !dry_run {
+                    let removed = sync::prune(&client, &summary.playlist_id, sync::KEEP).await?;
+                    if removed > 0 {
+                        eprintln!(
+                            "jam: removed {removed} older discovery playlist{}, newest {} kept",
+                            if removed == 1 { "" } else { "s" },
+                            sync::KEEP
+                        );
+                    }
+                }
                 Ok(())
             }
         }

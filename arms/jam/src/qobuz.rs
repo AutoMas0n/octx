@@ -255,6 +255,20 @@ impl<'a> Client<'a> {
             .ok_or_else(|| anyhow!("Qobuz created a playlist but did not return its id"))
     }
 
+    /// Delete a whole playlist.
+    ///
+    /// This is the retention path's call, kept apart from the track-diff path
+    /// above: it removes the playlist itself rather than entries within it, so
+    /// the two never share a parameter name or a failure mode.
+    pub async fn delete_playlist(&self, playlist_id: &str) -> Result<()> {
+        self.get(
+            "playlist/delete",
+            &[("playlist_id", playlist_id.to_string())],
+        )
+        .await?;
+        Ok(())
+    }
+
     /// Append tracks to a playlist, in order, in batches.
     pub async fn add_tracks(&self, playlist_id: &str, track_ids: &[String]) -> Result<()> {
         for batch in track_ids.chunks(TRACK_BATCH) {

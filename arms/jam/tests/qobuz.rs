@@ -107,6 +107,8 @@ struct State {
     catalog: Vec<Catalog>,
     adds: Vec<Vec<String>>,
     removes: Vec<Vec<String>>,
+    /// Playlist ids passed to `playlist/delete`, in call order.
+    deletes: Vec<String>,
 }
 
 impl State {
@@ -161,6 +163,20 @@ impl Fake {
     /// The track ids each `deleteTracks` call carried, in call order.
     fn removes(&self) -> Vec<Vec<String>> {
         self.state.lock().expect("state lock").removes.clone()
+    }
+
+    /// The playlist ids each `playlist/delete` call carried, in call order.
+    fn deleted(&self) -> Vec<String> {
+        self.state.lock().expect("state lock").deletes.clone()
+    }
+
+    /// Put a playlist into the fake's state directly, bypassing the API, so a
+    /// test can arrange what already exists before a run starts.
+    fn seed_playlist(&self, id: &str, name: &str, track_ids: &[&str]) {
+        self.state
+            .lock()
+            .expect("state lock")
+            .seed_playlist(id, name, track_ids);
     }
 }
 
@@ -246,6 +262,15 @@ fn qobuz(catalog: Vec<(&str, &str, &str)>) -> (Mock, Fake) {
                     entries.retain(|entry| !ids.contains(&entry.entry_id));
                 }
                 Response::json("{}")
+            }
+            "/playlist/delete" => {
+                let id = request.query("playlist_id").unwrap_or_default();
+                state.deletes.push(id.clone());
+                state
+                    .playlists
+                    .retain(|(playlist_id, _)| *playlist_id != id);
+                state.entries.remove(&id);
+                Response::json(r#"{"success":true}"#)
             }
             "/track/search" => {
                 let query = request.query("query").unwrap_or_default();
@@ -698,4 +723,273 @@ async fn an_entry_without_an_mbid_resolves_by_artist_and_title() {
     assert!(query.contains("Fletcher"), "{query}");
     assert!(query.contains("Bitter"), "{query}");
     assert_eq!(fake.tracks("Jams"), vec!["101"]);
+}
+
+// ------------------------------------------------------ deleting a playlist
+
+/// A refusal from Qobuz, in the shape the API actually uses: a 200 whose body
+/// carries the reason rather than a failing status.
+fn refusal(message: &str) -> Response {
+    Response::json(json!({ "message": message }).to_string())
+}
+
+#[tokio::test]
+async fn deleting_a_playlist_names_the_playlist_and_not_its_tracks() {
+    let qobuz = Mock::start(|request| match request.route() {
+        "/playlist/delete" => Response::json(r#"{"success":true}"#),
+        _ => Response::status(404, r#"{"message":"no such route"}"#),
+    });
+
+    let cfg = octx_jam::config::Config {
+        qobuz_api: qobuz.base.clone(),
+        ..octx_jam::config::Config::default()
+    };
+    let http = octx_jam::http::Http::new(cfg).expect("build an HTTP client");
+    let client = octx_jam::qobuz::Client::new(&http, "qz-jesse-token", None);
+
+    client
+        .delete_playlist("12424573344")
+        .await
+        .expect("delete a playlist");
+
+    // One request, carrying the playlist's own id — never a list of entries.
+    let requests = qobuz.route("/playlist/delete");
+    assert_eq!(requests.len(), 1, "one request per delete");
+    let request = &requests[0];
+    assert_eq!(
+        request.query("playlist_id").as_deref(),
+        Some("12424573344"),
+        "the playlist id travels as playlist_id"
+    );
+    assert_eq!(
+        request.query("playlist_track_ids"),
+        None,
+        "deleting a playlist must not send entry ids"
+    );
+    assert_eq!(
+        request.query("playlist_tracks_ids"),
+        None,
+        "deleting a playlist must not send the misspelled entry parameter"
+    );
+    assert_eq!(
+        request.query("user_auth_token").as_deref(),
+        Some("qz-jesse-token"),
+        "the delete carries the account's token"
+    );
+}
+
+#[tokio::test]
+async fn a_refused_delete_reports_the_route_without_echoing_the_token() {
+    let qobuz = Mock::start(|_| refusal("Invalid app id"));
+
+    let cfg = octx_jam::config::Config {
+        qobuz_api: qobuz.base.clone(),
+        ..octx_jam::config::Config::default()
+    };
+    let http = octx_jam::http::Http::new(cfg).expect("build an HTTP client");
+    let client = octx_jam::qobuz::Client::new(&http, "qz-jesse-token", None);
+
+    let error = client
+        .delete_playlist("12424573344")
+        .await
+        .expect_err("a refusal is an error");
+
+    // The operator learns which call failed and why, and nothing else.
+    let message = format!("{error:#}");
+    assert!(message.contains("playlist/delete"), "{message}");
+    assert!(message.contains("Invalid app id"), "{message}");
+    assert!(!message.contains("qz-jesse-token"), "{message}");
+}
+
+// ---------------------------------------------------- discovery retention
+//
+// The retention rule only ever applies to the `discover` source, and only after
+// a delivery has already succeeded. These drive the real binary end to end, with
+// a mock Last.fm supplying the seeds and the mock Qobuz holding what already
+// exists, so the rule is observed as an operator would see it.
+
+const LASTFM_ROUTE: &str = "/2.0/";
+
+/// A Last.fm answering the discovery read endpoints with a small, fixed catalog.
+fn lastfm() -> Mock {
+    Mock::start(|request| {
+        if request.route() != LASTFM_ROUTE {
+            return Response::status(404, r#"{"error":"no such route"}"#);
+        }
+        match request.query("method").as_deref() {
+            Some("user.getTopArtists") => Response::json(
+                r#"{"topartists":{"artist":[{"name":"Seed One"}],"@attr":{"totalPages":"1"}}}"#,
+            ),
+            Some("artist.getSimilar") => Response::json(
+                r#"{"similarartists":{"artist":[{"name":"Sim A"},{"name":"Sim B"}],"@attr":{"totalPages":"1"}}}"#,
+            ),
+            Some("artist.getTopTracks") => {
+                let artist = request.query("artist").unwrap_or_default();
+                let title = format!("{artist} Track");
+                Response::json(format!(
+                    r#"{{"toptracks":{{"track":[{{"name":"{title}","artist":{{"name":"{artist}"}}}}],"@attr":{{"totalPages":"1"}}}}}}"#
+                ))
+            }
+            Some("user.getrecenttracks") => {
+                Response::json(r#"{"recenttracks":{"track":[],"@attr":{"totalPages":"1"}}}"#)
+            }
+            _ => Response::status(404, r#"{"error":6,"message":"no such method"}"#),
+        }
+    })
+}
+
+/// A document whose account carries both the Last.fm key and a Qobuz token, so
+/// a discovery run reaches the sink without ever needing ListenBrainz.
+fn discover_qobuz_account() -> String {
+    document(
+        r#""jesse": {
+            "lastfm": {"user": "jesse1819"},
+            "qobuz": {"user_auth_token": "qz-jesse-token"}
+        }"#,
+        None,
+    )
+}
+
+/// The endpoints a discovery run needs to reach both Last.fm and Qobuz.
+fn discover_endpoints(lastfm: &Mock, qobuz: &Mock) -> Vec<(&'static str, String)> {
+    vec![
+        (
+            "OCTX_JAM_LASTFM_API",
+            format!("{}{LASTFM_ROUTE}", lastfm.base),
+        ),
+        ("OCTX_JAM_QOBUZ_API", qobuz.base.clone()),
+    ]
+}
+
+#[test]
+fn pruning_keeps_the_newest_ten_discovery_playlists() {
+    let lastfm = lastfm();
+    // Every entry the fixed Last.fm catalog yields must resolve, so the
+    // delivery succeeds and the retention step is reached.
+    let (qobuz, fake) = qobuz(vec![
+        ("Seed One", "Seed One Track", "101"),
+        ("Sim A", "Sim A Track", "102"),
+        ("Sim B", "Sim B Track", "103"),
+    ]);
+
+    // Eleven older discovery playlists. Their dates sort before any real run's,
+    // so with the run's own playlist added there are twelve and two must go.
+    for day in 1..=11u32 {
+        fake.seed_playlist(
+            &format!("old-{day:02}"),
+            &format!("Last.fm Discovery 1970-01-{day:02}"),
+            &["901"],
+        );
+    }
+    // Neither the fixed defaults nor an unrelated playlist is a candidate.
+    fake.seed_playlist("recs", "ListenBrainz Discovery", &["902"]);
+    fake.seed_playlist("radio", "ListenBrainz Radio", &["903"]);
+    fake.seed_playlist("mine", "Road Trip", &["904"]);
+
+    let store = Store::with_document(Some(&discover_qobuz_account()));
+    let output = jam(
+        &store,
+        &discover_endpoints(&lastfm, &qobuz),
+        &["discover", "--output", "qobuz"],
+    );
+    output.ok();
+
+    // The two oldest are gone, and only those two.
+    assert_eq!(
+        fake.deleted(),
+        vec!["old-02".to_string(), "old-01".to_string()],
+        "the two oldest discovery playlists must be the only ones removed"
+    );
+
+    // The newest ten survive: the run's own playlist and nine of the older ones.
+    for day in 3..=11u32 {
+        assert!(
+            !fake.deleted().contains(&format!("old-{day:02}")),
+            "old-{day:02} must survive"
+        );
+    }
+
+    // The run's own playlist — named for today — is never removed.
+    assert!(
+        !fake.deleted().iter().any(|id| !id.starts_with("old-")),
+        "only dated discovery playlists may be removed"
+    );
+
+    // The fixed defaults and the unrelated playlist are untouched.
+    assert_eq!(fake.tracks("ListenBrainz Discovery"), vec!["902"]);
+    assert_eq!(fake.tracks("ListenBrainz Radio"), vec!["903"]);
+    assert_eq!(fake.tracks("Road Trip"), vec!["904"]);
+}
+
+#[test]
+fn keep_everything_skips_pruning_entirely() {
+    let lastfm = lastfm();
+    let (qobuz, fake) = qobuz(vec![
+        ("Seed One", "Seed One Track", "101"),
+        ("Sim A", "Sim A Track", "102"),
+        ("Sim B", "Sim B Track", "103"),
+    ]);
+
+    // Far more than ten discovery playlists exist, so pruning would otherwise
+    // remove several.
+    for day in 1..=20u32 {
+        fake.seed_playlist(
+            &format!("old-{day:02}"),
+            &format!("Last.fm Discovery 1970-01-{day:02}"),
+            &["901"],
+        );
+    }
+
+    let store = Store::with_document(Some(&discover_qobuz_account()));
+    let output = jam(
+        &store,
+        &discover_endpoints(&lastfm, &qobuz),
+        &["discover", "--output", "qobuz", "--keep"],
+    );
+    output.ok();
+
+    // `--keep` means no delete is even attempted.
+    assert!(
+        fake.deleted().is_empty(),
+        "`--keep` must leave every playlist in place: {:?}",
+        fake.deleted()
+    );
+    assert!(
+        qobuz.route("/playlist/delete").is_empty(),
+        "`--keep` must not send a delete request at all"
+    );
+}
+
+#[test]
+fn a_failed_delivery_never_prunes() {
+    let lastfm = lastfm();
+    // A Qobuz whose playlist creation fails: the run stops before writing, so
+    // retention must not run either.
+    let qobuz = Mock::start(|request| match request.route() {
+        "/playlist/getUserPlaylists" => Response::json(
+            json!({
+                "playlists": { "items": [
+                    {"id": "old-01", "name": "Last.fm Discovery 1970-01-01", "tracks_count": 0},
+                    {"id": "old-02", "name": "Last.fm Discovery 1970-01-02", "tracks_count": 0}
+                ]}
+            })
+            .to_string(),
+        ),
+        "/playlist/create" => Response::status(500, r#"{"message":"boom"}"#),
+        _ => Response::status(404, r#"{"error":"no such route"}"#),
+    });
+
+    let store = Store::with_document(Some(&discover_qobuz_account()));
+    let output = jam(
+        &store,
+        &discover_endpoints(&lastfm, &qobuz),
+        &["discover", "--output", "qobuz"],
+    );
+    output.failed();
+
+    // A failed delivery leaves every playlist in place: no delete is attempted.
+    assert!(
+        qobuz.route("/playlist/delete").is_empty(),
+        "a failed delivery must never prune"
+    );
 }
