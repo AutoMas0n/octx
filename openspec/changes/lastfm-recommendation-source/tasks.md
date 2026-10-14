@@ -37,8 +37,8 @@
 
 ## 6. Skill and help documentation
 
-- [ ] 6.1 Document `discover` in `arms/jam/skill.md` under the existing Usage, Options, Examples, and Failure modes sections, including its seed, prompt, and retention options, keeping the seven required sections in their fixed order — verify the `arm-skills` conformance test passes.
-- [ ] 6.2 Confirm the subcommand's help text is self-documenting enough to stand alone as its documentation — verify the `--help` output names what seeds the recommendations, what the default playlist is, which credential it needs, and that pruning is on by default.
+- [x] 6.1 Document `discover` in `arms/jam/skill.md` under the existing Usage, Options, Examples, and Failure modes sections, including its seed, prompt, and retention options, keeping the seven required sections in their fixed order — verify the `arm-skills` conformance test passes.
+- [x] 6.2 Confirm the subcommand's help text is self-documenting enough to stand alone as its documentation — verify the `--help` output names what seeds the recommendations, what the default playlist is, which credential it needs, and that pruning is on by default.
 
 ## 7. Integration and deployment
 

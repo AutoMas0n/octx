@@ -48,6 +48,14 @@ pub enum Command {
     },
 
     /// Fetch Last.fm-seeded recommendations
+    ///
+    /// Seeds from the account's own Last.fm listening — or `--seed-artist` or
+    /// `--prompt` — fans out through the artists Last.fm calls similar, and
+    /// excludes what the account has already scrobbled. Needs the shared
+    /// `lastfm.api_key` and the account's `lastfm.user`; `--output qobuz`
+    /// additionally needs `qobuz.user_auth_token`. The default Qobuz playlist
+    /// is `Last.fm Discovery YYYY-MM-DD` for the run's UTC date, and older
+    /// discovery playlists are pruned to the newest ten by default.
     #[command(override_usage = "jam discover --output <json|qobuz> [OPTIONS]")]
     Discover {
         /// How many entries to ask for (default 25, maximum 100)
@@ -58,7 +66,8 @@ pub enum Command {
         #[arg(long, value_enum)]
         output: PlaylistSink,
 
-        /// Target playlist name or id (qobuz sink)
+        /// Target playlist name or id (qobuz sink; default `Last.fm Discovery
+        /// YYYY-MM-DD` for the run's UTC date)
         #[arg(long)]
         playlist: Option<String>,
 
@@ -70,7 +79,7 @@ pub enum Command {
         #[arg(long, value_name = "TAG")]
         prompt: Option<String>,
 
-        /// Keep every discovery playlist, removing none
+        /// Keep every discovery playlist (default: prune to the newest ten)
         #[arg(long)]
         keep: bool,
 

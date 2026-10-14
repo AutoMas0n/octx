@@ -1,7 +1,7 @@
 # jam
 
 ## Description
-Turns ListenBrainz recommendations into a playlist document — and, when asked, into an idempotent Qobuz playlist — and feeds listens from NDJSON, Last.fm, or ListenBrainz back into ListenBrainz. The read side is `recs`/`radio` → document → `json`/`qobuz`; the write side is `scrobble` → `json`/`listenbrainz`. It runs once per invocation and carries no scheduler.
+Turns ListenBrainz recommendations into a playlist document — and, when asked, into an idempotent Qobuz playlist — and feeds listens from NDJSON, Last.fm, or ListenBrainz back into ListenBrainz. The read side is `recs`/`radio` → document → `json`/`qobuz`; `discover` answers instead from Last.fm's similarity data, seeded by the account's own listening; the write side is `scrobble` → `json`/`listenbrainz`. It runs once per invocation and carries no scheduler.
 
 The Qobuz target is **jam-owned**: the sink converges the playlist on the source's current output, so a track that is no longer recommended, a hand-added track, or a hand-reordering is removed or overwritten on the next run. Point `--playlist` at a dedicated playlist, not one you edit by hand.
 
@@ -9,6 +9,7 @@ The Qobuz target is **jam-owned**: the sink converges the playlist on the source
 ```
 octx x jam recs   [--count N] [--playlist <name|id>] [--dry-run] --output <json|qobuz>
 octx x jam radio  --prompt PROMPT --mode <easy|medium|hard> [--playlist <name|id>] [--dry-run] --output <json|qobuz>
+octx x jam discover [--count N] [--playlist <name|id>] [--seed-artist ARTIST | --prompt TAG] [--keep] [--dry-run] --output <json|qobuz>
 octx x jam scrobble [--source <ndjson|lastfm|listenbrainz>] [--input <path|->] [--limit N] --output <json|listenbrainz>
 octx x jam status
 ```
@@ -22,6 +23,15 @@ Global options apply to every subcommand: `--account <name>`, `--user <name>`, `
 - `--mode <easy|medium|hard>` — how adventurous the radio picks are. Required by `radio`.
 - `--playlist <name|id>` — target Qobuz playlist. A name is resolved against the account's own playlists and created when missing; a numeric value is used as the playlist id without a lookup. Ignored by `--output json`.
 - `--dry-run` — resolve and report the intended additions and removals without writing. `--output qobuz` only.
+- `--output <json|qobuz>` — where the playlist document goes. Required.
+
+### Discovery (`discover`)
+- `--count N` — entries to ask for (default 25, clamped to its maximum of 100).
+- `--seed-artist ARTIST` — seed from this one artist instead of the account's own listening; the artist fans out through the artists Last.fm calls similar. Conflicts with `--prompt`.
+- `--prompt TAG` — seed from this Last.fm tag's popular tracks instead of the account's own listening. Conflicts with `--seed-artist`.
+- `--playlist <name|id>` — target Qobuz playlist, as for the read side, except the default is `Last.fm Discovery YYYY-MM-DD` (the run's UTC date), so a same-day re-run converges on one playlist and each day gets its own. Ignored by `--output json`.
+- `--keep` — leave every existing discovery playlist in place. Without it, a successful `--output qobuz` delivery removes all but the newest ten `Last.fm Discovery YYYY-MM-DD` playlists; no other playlist is ever a candidate.
+- `--dry-run` — resolve and report without writing, and without pruning. `--output qobuz` only.
 - `--output <json|qobuz>` — where the playlist document goes. Required.
 
 ### Write side (`scrobble`)
@@ -40,6 +50,9 @@ Global options apply to every subcommand: `--account <name>`, `--user <name>`, `
 - `octx x jam recs --count 50 --output qobuz` — sync 50 recommendations into the default `ListenBrainz Discovery` playlist
 - `octx x jam radio --prompt "artist:(queen)" --mode hard --output qobuz --playlist "Radio Jams"` — fill `Radio Jams` from an LB Radio prompt
 - `octx x jam recs --output qobuz --dry-run` — report what a sync would add and remove without touching the playlist
+- `octx x jam discover --output qobuz` — build today's `Last.fm Discovery YYYY-MM-DD` playlist from the account's Last.fm listening, pruning older discovery playlists to ten
+- `octx x jam discover --seed-artist "Reneé Rapp" --count 40 --output qobuz` — seed from one artist instead of the account's own listening
+- `octx x jam discover --prompt chillwave --output json` — print tracks for a Last.fm tag without touching Qobuz
 - `octx x jam scrobble --source lastfm --limit 200 --output listenbrainz --account wife` — send her Last.fm history to her ListenBrainz account
 - `octx x jam scrobble --input history.ndjson --output listenbrainz` — submit listens from a file
 - `octx x jam status` — check whether a `recs` run could succeed before scheduling one
@@ -75,18 +88,20 @@ The document's shape:
 
 ## Prerequisites
 - **The ListenBrainz account must already have scrobbles.** `recs` reads a collaborative-filtering model ListenBrainz trains from listens an external scrobbler submits; `jam` cannot create that input, so a user with no listening history has no recommendations until something scrobbles some. Run `octx x jam scrobble` first if needed. ListenBrainz only rebuilds that model on its own daily run (currently 02:01 UTC), so an account scrobbled since the last one keeps answering `204` for up to a day — that is the model catching up, not a fault.
-- **A credential document at host `jam`** (above) with the account fields the run needs: `listenbrainz.user`/`token` for `recs`, `radio`, and `status`; `qobuz.user_auth_token` for `--output qobuz`; the shared `lastfm.api_key` (and a `lastfm.user`) for `--source lastfm`.
+- **A credential document at host `jam`** (above) with the account fields the run needs: `listenbrainz.user`/`token` for `recs`, `radio`, and `status`; `qobuz.user_auth_token` for `--output qobuz`; the shared `lastfm.api_key` (and a `lastfm.user`) for `discover` and `--source lastfm`.
 - **A Qobuz account** whose `user_auth_token` is in the document, for `--output qobuz`. The catalog and playlist endpoints are what the sink talks to.
 - **Network access** to `api.listenbrainz.org`, `listenbrainz.org/player`, `www.qobuz.com`, and (for the Last.fm source) `ws.audioscrobbler.com`.
 - **An external scheduler** (cron, a systemd timer, or `termux-job-scheduler`) for recurring runs. The arm runs once per invocation and carries no timer; schedule one command per account, one target playlist per line. Guard a scheduled `recs` with `octx x jam status` so it skips rather than fails while no model exists, and run the first one with `--dry-run`.
 
 ## Failure modes
-- **No subcommand** — exits non-zero and prints usage listing `recs`, `radio`, `scrobble`, and `status`.
+- **No subcommand** — exits non-zero and prints usage listing `recs`, `radio`, `discover`, `scrobble`, and `status`.
 - **A document-producing subcommand without `--output`**, or with a sink invalid for it (for example `recs --output listenbrainz`) — exits non-zero before any request. `status` needs no sink.
 - **The credential document is absent, malformed, or lacks a needed field** — exits non-zero naming the field's path (for example `accounts.wife.qobuz.user_auth_token`) and host `jam`, and never echoing a value. Add the field with `octx creds add jam`.
 - **Several accounts and no `default`, or an unknown `--account`** — exits non-zero naming the accounts present; nothing is requested.
 - **The recommendation endpoint answers `204`, or a source otherwise yields nothing** — exits non-zero with guidance and writes nothing. A source with nothing to give is never treated as an empty playlist, so no track is removed and no document reaches stdout. This is normal both for a user with no listening history yet and for one scrobbled since ListenBrainz's last daily model rebuild — check `octx x jam status` again after that run before concluding anything is wrong.
 - **`radio` without `--prompt` or `--mode`** — exits non-zero naming the missing argument.
+- **`discover` with no listening to seed from** — exits non-zero with guidance naming Last.fm; the account has no top artists, so pass `--seed-artist` or `--prompt` or scrobble something first. Nothing is written.
+- **`discover` with `--seed-artist` and `--prompt` together** — exits non-zero before any request; the two seeds are mutually exclusive.
 - **`--output qobuz` for an account with no `qobuz.user_auth_token`** — exits non-zero naming that field before any Qobuz request.
 - **A Qobuz request is rate-limited (`429`)** — the arm backs off and retries; if retries are exhausted it exits non-zero reporting the Qobuz error. An entry whose catalog search fails is reported and skipped, and the rest of the run continues.
 - **`--output listenbrainz` with a token that may not submit** — exits non-zero distinguishing a submit-permission failure from a missing credential; the token needs the `listenbrainz:submit-listens` scope.
