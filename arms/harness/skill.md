@@ -1,3 +1,8 @@
+---
+name: harness-octx
+description: Resolves a harness name to a harness.yaml definition, merges defaults with CLI overrides, and dispatches to the agent arm.
+---
+
 # harness
 
 ## Description

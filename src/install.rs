@@ -59,6 +59,7 @@ pub async fn from_registry(name: &str) -> Result<(), OctxError> {
     // Install skill if available
     if let Some(skill_url) = skill_url {
         install_skill(name, skill_url).await?;
+        project_installed_skill(name)?;
     }
 
     // Update manifest
@@ -207,7 +208,24 @@ pub async fn fetch(url: &str, etag_path: &Path) -> Result<(Vec<u8>, bool), OctxE
     Ok((bytes, false))
 }
 
-/// Download a skill file from a URL and save to {config_dir}/octx/skills/<name>.md
+/// Project an installed arm's skill into every registered agent directory.
+///
+/// Called after `install_skill` writes the canonical copy, so the skill is
+/// visible to agents as soon as the arm is installed.
+fn project_installed_skill(name: &str) -> Result<(), OctxError> {
+    let source = paths::skills_dir().join(format!("{name}.md"));
+    if !source.exists() {
+        return Ok(());
+    }
+
+    for (_agent, dir) in crate::skills::link_list() {
+        crate::skills::project_skill(name, &source, Path::new(&dir))?;
+    }
+
+    Ok(())
+}
+
+/// Download a skill file from a URL and save to {config_dir}/skills/<name>.md
 pub async fn install_skill(name: &str, skill_url: &str) -> Result<(), OctxError> {
     let (bytes, _cached) = fetch(
         skill_url,
@@ -227,6 +245,107 @@ pub async fn install_skill(name: &str, skill_url: &str) -> Result<(), OctxError>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Serve one canned response on a loopback port; returns its URL.
+    fn serve_once(body: Vec<u8>) -> String {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback port");
+        let addr = listener.local_addr().expect("read local addr");
+
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.write_all(&body);
+            }
+        });
+
+        format!("http://{addr}/skill.md")
+    }
+
+    #[tokio::test]
+    async fn test_install_skill_refetches_canonical_with_frontmatter() {
+        let _data = crate::paths::TestDataDir::new("install-skill-refetch");
+        let base = std::env::temp_dir().join(format!(
+            "octx-skill-refetch-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        crate::paths::set_test_config_dir(base.clone());
+
+        // A canonical skill installed before the upgrade carries no frontmatter.
+        let skills_dir = paths::skills_dir();
+        std::fs::create_dir_all(&skills_dir).unwrap();
+        std::fs::write(
+            skills_dir.join("fixture.md"),
+            b"# fixture\n\n## Description\nOld.\n",
+        )
+        .unwrap();
+
+        // The registry now publishes the skill with frontmatter.
+        let published = "---\nname: fixture-octx\ndescription: A fixture arm.\n---\n\n# fixture\n";
+        let url = serve_once(published.as_bytes().to_vec());
+
+        install_skill("fixture", &url).await.unwrap();
+
+        // The canonical copy is re-fetched with frontmatter.
+        let canonical = std::fs::read_to_string(skills_dir.join("fixture.md")).unwrap();
+        assert!(
+            canonical.starts_with("---\nname: fixture-octx\n"),
+            "canonical skill should carry frontmatter after re-fetch: {canonical}"
+        );
+
+        // And it projects to a loadable SKILL.md.
+        let agent_dir = base.join("agent");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        crate::skills::project_skill("fixture", &skills_dir.join("fixture.md"), &agent_dir)
+            .unwrap();
+        let projection =
+            std::fs::read_to_string(agent_dir.join("fixture-octx").join("SKILL.md")).unwrap();
+        assert!(
+            projection.starts_with("---\nname: fixture-octx\n"),
+            "projected SKILL.md should be loadable: {projection}"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn test_project_installed_skill_projects_into_registered_links() {
+        let base = std::env::temp_dir().join(format!(
+            "octx-install-project-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        crate::paths::set_test_config_dir(base.clone());
+
+        // The agent directory is registered before any skill exists.
+        let agent_dir = base.join("agent");
+        crate::skills::link_add("pi", agent_dir.to_str().unwrap()).unwrap();
+
+        // An arm's canonical skill lands after the link is registered.
+        let skills_dir = paths::skills_dir();
+        std::fs::create_dir_all(&skills_dir).unwrap();
+        std::fs::write(skills_dir.join("tool.md"), b"skill content").unwrap();
+
+        project_installed_skill("tool").unwrap();
+
+        let target = agent_dir.join("tool-octx").join("SKILL.md");
+        assert!(
+            target.exists(),
+            "install should project <arm>-octx/SKILL.md into the registered link"
+        );
+    }
 
     #[test]
     fn test_parse_remote_url_parses_github() {

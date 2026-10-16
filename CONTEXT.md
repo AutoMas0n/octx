@@ -156,9 +156,10 @@ registry_url = "https://github.com/AutoMas0n/octx/releases/latest/download/regis
 noninteractive = false
 
 [links]
-# Agent directories to sync skill files to
-# "pi" = "/home/user/.pi/agent/skills"
-# "claude" = "/home/user/.claude/skills"
+# Extra agent directories to project skill files into.
+# Claude and pi are detected and linked automatically; this section is only
+# needed for a directory octx does not already know.
+# "other-agent" = "/home/user/.other-agent/skills"
 ```
 
 ## Creds schema (decrypted content)
@@ -221,7 +222,7 @@ Every arm is a standalone binary:
 
 ### Skill contract
 
-Every arm ships a `skill.md` conforming to [SKILL-CONTRACT.md](SKILL-CONTRACT.md): an `# <arm-name>` heading followed by exactly seven sections — Description, Usage, Options, Examples, Credentials, Prerequisites, Failure modes — in that order. Credentials are named by host (`octx creds add <host>`), never by environment variable.
+Every arm ships a `skill.md` conforming to [SKILL-CONTRACT.md](SKILL-CONTRACT.md): a `name`/`description` YAML frontmatter block, then an `# <arm-name>` heading, then exactly seven sections — Description, Usage, Options, Examples, Credentials, Prerequisites, Failure modes — in that order. Credentials are named by host (`octx creds add <host>`), never by environment variable.
 
 Conformance is enforced by `tests/skill_conformance.rs`, which runs as part of `cargo test`, and by a release gate that fails when a shipped arm has no skill.
 

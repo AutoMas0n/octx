@@ -9,6 +9,8 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
     static TEST_DATA_DIR: std::cell::RefCell<Option<PathBuf>> =
         const { std::cell::RefCell::new(None) };
+    static TEST_HOME_DIR: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// Redirect config_dir for testing. Sets the thread-local override.
@@ -26,6 +28,16 @@ pub fn set_test_config_dir(path: PathBuf) {
 pub fn set_test_data_dir(path: PathBuf) {
     TEST_DATA_DIR.with(|cell| {
         *cell.borrow_mut() = Some(path);
+    });
+}
+
+/// Point `home_dir()` at a temporary root for one test, or clear it with `None`.
+/// Callers should clear on drop, so thread-local state never leaks to the next
+/// test to run on the same thread.
+#[cfg(test)]
+pub fn set_test_home_dir(path: Option<PathBuf>) {
+    TEST_HOME_DIR.with(|cell| {
+        *cell.borrow_mut() = path;
     });
 }
 
@@ -66,6 +78,23 @@ impl Drop for TestDataDir {
         TEST_DATA_DIR.with(|cell| {
             *cell.borrow_mut() = None;
         });
+    }
+}
+
+/// Returns the user's home directory, or `None` when it cannot be determined.
+///
+/// This is the root agent detection reads to find configuration directories.
+/// In the crate's own tests it returns a thread-local override and `None` when
+/// unset — never the real home — so a test can never detect, and therefore never
+/// write into, a developer's actual agent directories.
+pub fn home_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    {
+        TEST_HOME_DIR.with(|cell| cell.borrow().clone())
+    }
+    #[cfg(not(test))]
+    {
+        dirs::home_dir()
     }
 }
 

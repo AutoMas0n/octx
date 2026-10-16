@@ -1,3 +1,8 @@
+---
+name: agent-octx
+description: Runs any ACP-compatible AI agent headlessly, managing the session and exposing a Unix socket tool-execution plane.
+---
+
 # agent
 
 ## Description

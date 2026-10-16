@@ -1,10 +1,12 @@
 //! Every arm's `skill.md` conforms to `SKILL-CONTRACT.md`.
 //!
 //! An arm's skill is its discovery surface: octx publishes it beside the binary
-//! and symlinks it into agent directories, so a missing section is a wrong tool
-//! call rather than a documentation blemish. This test walks `arms/*` and fails
-//! when an arm has no skill, when a required section is missing or out of order,
-//! or when a skill instructs a credential through the environment.
+//! and projects it into agent directories as `<arm>-octx/SKILL.md`, so a missing
+//! section is a wrong tool call rather than a documentation blemish. This test
+//! walks `arms/*` and fails when an arm has no skill, when the `name` or
+//! `description` frontmatter is missing, when `name` is not `<arm>-octx`, when a
+//! required section is missing or out of order, or when a skill instructs a
+//! credential through the environment.
 //!
 //! The contract is documented in `SKILL-CONTRACT.md` at the repository root.
 
@@ -54,8 +56,54 @@ fn env_credential_violation(markdown: &str) -> Option<String> {
     None
 }
 
+/// The skill must open with a YAML frontmatter block carrying `name` and
+/// `description`; without it the published `SKILL.md` is not loadable. `name`
+/// must be the arm name suffixed `-octx`, so octx-provided skills are
+/// identifiable wherever an agent lists them.
+fn frontmatter_violation(arm: &str, markdown: &str) -> Option<String> {
+    let mut lines = markdown.lines();
+
+    if lines.next().map(str::trim_end) != Some("---") {
+        return Some("missing frontmatter block — expected `---` on the first line".into());
+    }
+
+    let expected = format!("{arm}-octx");
+    let mut name: Option<String> = None;
+    let mut description = false;
+    for line in lines {
+        if line.trim_end() == "---" {
+            match name {
+                None => return Some("frontmatter is missing `name`".into()),
+                Some(ref found) if found != &expected => {
+                    return Some(format!(
+                        "frontmatter `name` is `{found}` — expected `{expected}` (the arm name suffixed `-octx`)"
+                    ));
+                }
+                _ => {}
+            }
+            if !description {
+                return Some("frontmatter is missing `description`".into());
+            }
+            return None;
+        }
+        if let Some((key, value)) = line.trim().split_once(':') {
+            match key.trim() {
+                "name" if !value.trim().is_empty() => name = Some(value.trim().to_string()),
+                "description" if !value.trim().is_empty() => description = true,
+                _ => {}
+            }
+        }
+    }
+
+    Some("frontmatter block is not closed with `---`".into())
+}
+
 /// Check one skill's text against the contract.
-fn check_skill(markdown: &str) -> Result<(), String> {
+fn check_skill(arm: &str, markdown: &str) -> Result<(), String> {
+    if let Some(violation) = frontmatter_violation(arm, markdown) {
+        return Err(violation);
+    }
+
     let headings = section_headings(markdown);
 
     for required in REQUIRED {
@@ -116,7 +164,7 @@ fn check_arms(arms_dir: &Path) -> Vec<String> {
         match std::fs::read_to_string(&skill_path) {
             Err(_) => problems.push(format!("arm `{arm}` has no {skill_path:?}")),
             Ok(markdown) => {
-                if let Err(problem) = check_skill(&markdown) {
+                if let Err(problem) = check_skill(&arm, &markdown) {
                     problems.push(format!("arm `{arm}`: {problem}"));
                 }
             }
@@ -140,6 +188,11 @@ fn scratch_dir(name: &str) -> PathBuf {
 
 /// A minimal conforming skill, used as the base for the negative cases.
 const CONFORMING: &str = "\
+---
+name: demo-octx
+description: Does one thing.
+---
+
 # demo
 
 ## Description
@@ -178,7 +231,7 @@ fn every_arm_has_a_conforming_skill() {
 
 #[test]
 fn conforming_skill_passes() {
-    assert_eq!(check_skill(CONFORMING), Ok(()));
+    assert_eq!(check_skill("demo", CONFORMING), Ok(()));
 }
 
 #[test]
@@ -198,7 +251,7 @@ fn missing_skill_file_is_reported_and_names_the_arm() {
 #[test]
 fn missing_section_is_reported_by_name() {
     let without_options = CONFORMING.replace("## Options\n- `--flag` — does a thing\n\n", "");
-    let error = check_skill(&without_options).expect_err("should reject a missing section");
+    let error = check_skill("demo", &without_options).expect_err("should reject a missing section");
     assert!(
         error.contains("## Options"),
         "error should name the missing section: {error}"
@@ -207,10 +260,56 @@ fn missing_section_is_reported_by_name() {
 
 #[test]
 fn empty_skill_is_reported_rather_than_accepted() {
-    let error = check_skill("").expect_err("should reject an empty skill");
+    let error = check_skill("demo", "").expect_err("should reject an empty skill");
     assert!(
-        error.contains("## Description"),
-        "error should name the first missing section: {error}"
+        error.contains("frontmatter"),
+        "error should name the first missing element: {error}"
+    );
+}
+
+#[test]
+fn missing_frontmatter_is_reported() {
+    let without = CONFORMING
+        .split("---\n")
+        .nth(2)
+        .expect("CONFORMING should have a frontmatter block")
+        .to_string();
+    let error =
+        check_skill("demo", &without).expect_err("should reject a skill without frontmatter");
+    assert!(
+        error.contains("frontmatter"),
+        "error should explain the violation: {error}"
+    );
+}
+
+#[test]
+fn frontmatter_without_description_is_reported() {
+    let without = CONFORMING.replace("description: Does one thing.\n", "");
+    let error =
+        check_skill("demo", &without).expect_err("should reject frontmatter without description");
+    assert!(
+        error.contains("description"),
+        "error should name the missing field: {error}"
+    );
+}
+
+#[test]
+fn frontmatter_without_name_is_reported() {
+    let without = CONFORMING.replace("name: demo-octx\n", "");
+    let error = check_skill("demo", &without).expect_err("should reject frontmatter without name");
+    assert!(
+        error.contains("name"),
+        "error should name the missing field: {error}"
+    );
+}
+
+#[test]
+fn frontmatter_name_without_octx_suffix_is_reported() {
+    let without = CONFORMING.replace("name: demo-octx\n", "name: demo\n");
+    let error = check_skill("demo", &without).expect_err("should reject a name without -octx");
+    assert!(
+        error.contains("-octx"),
+        "error should name the expected suffix: {error}"
     );
 }
 
@@ -221,7 +320,7 @@ fn sections_out_of_order_are_reported() {
         "## Prerequisites\nNone.\n",
         "## Prerequisites\nNone.\n\n## Credentials\nNone.\n",
     );
-    let error = check_skill(&swapped).expect_err("should reject out-of-order sections");
+    let error = check_skill("demo", &swapped).expect_err("should reject out-of-order sections");
     assert!(
         error.contains("out of order"),
         "error should say the order is wrong: {error}"
@@ -234,7 +333,7 @@ fn an_extra_section_is_rejected() {
         "## Credentials\nNone.\n",
         "## Environment\n- `OCTX_TOKEN_DEMO` — injected\n\n## Credentials\nNone.\n",
     );
-    let error = check_skill(&with_environment).expect_err("should reject an extra section");
+    let error = check_skill("demo", &with_environment).expect_err("should reject an extra section");
     assert!(
         error.contains("## Environment"),
         "error should name the unexpected section: {error}"
@@ -247,8 +346,8 @@ fn an_environment_credential_instruction_is_rejected() {
         "## Credentials\nNone.",
         "## Credentials\n- `OCTX_TOKEN_GITHUB` — injected when the arm is spawned",
     );
-    let error =
-        check_skill(&stale).expect_err("should reject an environment credential instruction");
+    let error = check_skill("demo", &stale)
+        .expect_err("should reject an environment credential instruction");
     assert!(
         error.contains("environment"),
         "error should explain the violation: {error}"
@@ -261,7 +360,7 @@ fn a_delegation_note_that_disowns_the_environment_is_allowed() {
         "## Credentials\nNone.",
         "## Credentials\nCredentials are never read from the environment; the arm fetches the `github` host (delegated as `OCTX_TOKEN_GITHUB`). Add it with `octx creds add github`.",
     );
-    assert_eq!(check_skill(&disowned), Ok(()));
+    assert_eq!(check_skill("demo", &disowned), Ok(()));
 }
 
 #[test]
@@ -270,5 +369,5 @@ fn subsections_inside_a_required_section_are_allowed() {
         "## Options\n- `--flag` — does a thing",
         "## Options\n### Flags\n- `--flag` — does a thing",
     );
-    assert_eq!(check_skill(&with_subsection), Ok(()));
+    assert_eq!(check_skill("demo", &with_subsection), Ok(()));
 }

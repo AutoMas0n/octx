@@ -164,6 +164,11 @@ fn uninstall_arm(name: &str) -> Result<(), OctxError> {
         std::fs::remove_file(&skill_path)?;
     }
 
+    // Remove the skill's projection from every registered agent directory.
+    for (_agent, dir) in crate::skills::link_list() {
+        let _ = crate::skills::unproject_skill(name, std::path::Path::new(&dir));
+    }
+
     let mut manifest = crate::manifest::Manifest::load()?;
     if manifest.remove_arm(name) {
         manifest.save()?;
@@ -530,6 +535,60 @@ mod tests {
     fn test_list_arms_empty() {
         let result = list_arms();
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_uninstall_removes_projection_and_leaves_other_arms() {
+        let data = crate::paths::TestDataDir::new("uninstall-projection");
+        let config = data.path().join("config");
+        std::fs::create_dir_all(&config).unwrap();
+        crate::paths::set_test_config_dir(config.clone());
+
+        // Two installed arms, each with a canonical skill.
+        let skills_dir = crate::paths::skills_dir();
+        std::fs::create_dir_all(&skills_dir).unwrap();
+        for name in ["tool", "other"] {
+            std::fs::write(skills_dir.join(format!("{name}.md")), b"skill").unwrap();
+        }
+
+        // A registered agent directory receives both projections.
+        let agent_dir = config.join("agent");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        crate::skills::link_add("pi", agent_dir.to_str().unwrap()).unwrap();
+
+        let mut manifest = crate::manifest::Manifest::load().unwrap();
+        for name in ["tool", "other"] {
+            manifest.set_arm(
+                name,
+                crate::manifest::ArmEntry {
+                    source: "registry".into(),
+                    source_url: "https://example.invalid".into(),
+                    version: "latest".into(),
+                    checksum: None,
+                    installed_at: "2026-01-01T00:00:00Z".into(),
+                },
+            );
+        }
+        manifest.save().unwrap();
+
+        uninstall_arm("tool").unwrap();
+
+        assert!(
+            !agent_dir.join("tool-octx").exists(),
+            "the uninstalled arm's projection should be removed"
+        );
+        assert!(
+            !skills_dir.join("tool.md").exists(),
+            "the uninstalled arm's canonical skill should be removed"
+        );
+        assert!(
+            agent_dir.join("other-octx").join("SKILL.md").exists(),
+            "another arm's projection should remain"
+        );
+        assert!(
+            skills_dir.join("other.md").exists(),
+            "another arm's canonical skill should remain"
+        );
     }
 
     #[test]

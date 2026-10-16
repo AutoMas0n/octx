@@ -1,3 +1,8 @@
+---
+name: parse-octx
+description: Not implemented; parses its arguments and exits 1 with 'parse arm: not yet implemented'.
+---
+
 # parse
 
 ## Description

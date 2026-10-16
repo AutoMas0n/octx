@@ -1,3 +1,8 @@
+---
+name: deploy-octx
+description: Not implemented; parses its arguments and exits 1 with 'deploy arm: not yet implemented'.
+---
+
 # deploy
 
 ## Description

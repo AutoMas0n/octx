@@ -1,3 +1,8 @@
+---
+name: jam-octx
+description: Turns ListenBrainz recommendations into a playlist document and Qobuz playlist, and feeds listens back into ListenBrainz.
+---
+
 # jam
 
 ## Description

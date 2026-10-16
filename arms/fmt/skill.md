@@ -1,3 +1,8 @@
+---
+name: fmt-octx
+description: Checks the line lengths of the files it is given and reports every line over 100 characters; never rewrites a file.
+---
+
 # fmt
 
 ## Description

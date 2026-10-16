@@ -1,12 +1,28 @@
 # Arm skill contract
 
-Every arm ships a `skill.md` beside its `Cargo.toml`. It is the arm's discovery surface: octx publishes it beside the binary, records its URL in `registry-index.json`, downloads it on install, and symlinks it into linked agent directories so an agent can find the arm and learn how to call it.
+Every arm ships a `skill.md` beside its `Cargo.toml`. It is the arm's discovery surface: octx publishes it beside the binary, records its URL in `registry-index.json`, downloads it on install, and projects it into linked agent directories as `<arm>-octx/SKILL.md` so an agent can find the arm and learn how to call it.
 
 The consumer is usually an agent, not a person. A missing prerequisite is not a documentation blemish — it is a wrong tool call. That is why the sections below are mandatory and why two of them (`Prerequisites`, `Failure modes`) are the ones the arm's author is least tempted to write.
 
+## Frontmatter
+
+A skill opens with a YAML frontmatter block carrying exactly two fields, both required:
+
+```yaml
+---
+name: <arm-name>-octx
+description: <one sentence: what the arm does>
+---
+```
+
+- `name` is the arm name suffixed with `-octx` — `agent` becomes `agent-octx`. The suffix marks the skill as octx-provided, so it is identifiable in an agent's skill list and on disk; the arm name itself stays the identity key used by the manifest, the canonical file, and the registry URL.
+- `description` is a single sentence describing what the arm does.
+
+The frontmatter is what makes the published `SKILL.md` loadable by an agent's skill loader; a skill without it is silently invisible. The projection directory is derived from the arm name and carries the same `-octx` suffix, so the directory and the declared name agree.
+
 ## The seven sections
 
-A skill is an `# <arm-name>` heading followed by exactly these seven `##` sections, in this order.
+A skill is the frontmatter block above, then an `# <arm-name>` heading (the arm name, without the suffix), then exactly these seven `##` sections, in this order.
 
 | # | Section | Must contain |
 |---|---------|--------------|
@@ -27,7 +43,7 @@ Rules:
 
 ## Enforcement
 
-`tests/skill_conformance.rs` walks `arms/*` and fails when an arm has no `skill.md`, when a required section is missing, when the sections are out of order, or when a skill instructs a credential through the environment. It runs as part of `cargo test`.
+`tests/skill_conformance.rs` walks `arms/*` and fails when an arm has no `skill.md`, when the `name` or `description` frontmatter is missing, when a required section is missing, when the sections are out of order, or when a skill instructs a credential through the environment. It runs as part of `cargo test`.
 
 The release workflow fails when a shipped arm has no skill, so a release cannot publish a `skill_url` of `null`.
 

@@ -50,7 +50,7 @@ Arms come from two sources:
 | **No version pinning** | Always latest. `octx update` refreshes everything. YAGNI. |
 | **Vendor-agnostic remote** | v1 parses GitHub URLs. Architecture supports any host. |
 | **Security by default** | GitHub CodeQL + Dependabot + `cargo audit` in CI. |
-| **Skills-first design** | Every arm ships with an AI skill file. `octx update` syncs skills to any agent vendor via symlinks/hardlinks. Frictionless configuration. |
+| **Skills-first design** | Every arm ships with an AI skill file. octx detects the agents you run (Claude, pi) and publishes each skill there with no configuration, plus any directory linked by hand. Frictionless configuration. |
 | **Self-updating** | `octx update` downloads the latest head binary and atomically replaces itself. No cargo, no rustup, no package manager — ever. |
 
 ---
@@ -231,12 +231,15 @@ src/
 │   ├── add(host, token)     # Encrypt + store in {config_dir}/octx/creds.enc
 │   ├── get(host)            # Retrieve token
 │   └── remove(host)
+├── agents.rs                # Known agents: where each keeps its skills
+│   ├── KNOWN_AGENTS         # Table: name, present-when dir, skills dir
+│   └── detected()           # Every known agent present on this machine
 ├── skills.rs                # Skill files + agent link management
 │   ├── install_skill(name)  # Copy skill.md to {config_dir}/octx/skills/<name>.md
-│   ├── sync_all()           # Symlink/hardlink skills to all linked agent dirs
+│   ├── sync_all()           # Symlink/hardlink skills to every publish target
 │   ├── link_add(path)       # Register agent directory, create if missing
 │   ├── link_remove(path)
-│   └── link_list()
+│   └── link_list()          # Registered links + detected agents, deduped
 ├── config.rs                # Config file read/write
 │   ├── load()               # Parse {config_dir}/octx/config.toml, merge defaults
 │   └── save()               # Write config (links, registry URL, etc.)
@@ -521,13 +524,18 @@ zeroize = "1"
 
 ## 9. Skills & Agent Integration
 
-Every arm ships with a **skill file** — a markdown document that tells AI agents (Pi, Claude Code, etc.) how to naturally use the tool. Skills live in `{config_dir}/octx/skills/` and are synced to agent directories via `octx update`.
+Every arm ships with a **skill file** — a markdown document that tells AI agents (Pi, Claude Code, etc.) how to naturally use the tool. Skills live in `{config_dir}/skills/<arm>.md` (keyed by arm name) and are projected into every detected agent and registered directory as `<arm>-octx/SKILL.md` when the arm is installed, when a directory is linked, and on `octx update`. The `-octx` suffix marks the skill as octx-provided, so it is identifiable wherever an agent lists skills; the arm name itself is unchanged.
 
 ### 9.1 Skill file format
 
 Each arm has a `skill.md` in the monorepo at `arms/<name>/skill.md`. Published alongside the binary in releases.
 
 ```markdown
+---
+name: fmt
+description: Opinionated code formatter. Formats source files according to project conventions.
+---
+
 # fmt
 
 ## Description
@@ -546,35 +554,61 @@ octx x fmt [files...] [--check]
 - `OCTX_TOKEN_GITHUB` — replaced by library access: the arm fetches the host it needs from the shared `octx-creds` library (never injected into the environment)
 ```
 
-### 9.2 `octx link <path>` — Registering agent directories
+### 9.2 Agent directories — detection and `octx link`
 
-Links are stored in `{config_dir}/octx/config.toml`:
+octx publishes a skill into two kinds of directory:
+
+**1. Detected agents.** A built-in table (`src/agents.rs`) names each known
+agent, the home-relative directory whose presence means it is installed, and its
+skills directory:
+
+| Agent | Present when | Skills directory |
+|-------|--------------|------------------|
+| `claude` | `~/.claude` exists | `~/.claude/skills` |
+| `pi` | `~/.pi` exists | `~/.pi/agent/skills` |
+
+Detection is presence-based and never creates an agent's configuration
+directory, so octx cannot conjure a directory for a tool the user does not have.
+It is always on: the only way to exclude an agent is to not have it. Adding an
+agent is one entry in `KNOWN_AGENTS`.
+
+**2. Explicit links.** Any other directory, registered by hand. Links are stored
+in `{config_dir}/octx/config.toml`:
 
 ```toml
 [links]
-"pi" = "/home/user/.pi/agent/skills"
-"claude" = "/home/user/.claude/skills"
+"other-agent" = "/home/user/.other-agent/skills"
 ```
 
 ```
-octx link ~/.pi/agent/skills       # Register, create dir if missing
-octx link ~/.claude/skills
-octx link ~/.claude/skills --unlink  # Remove
-octx links                           # List all
+octx link ~/.other-agent/skills           # Register, create dir if missing
+octx link ~/.other-agent/skills --unlink  # Remove
+octx link list                            # Every directory octx publishes to
 ```
 
-When a link is registered, `octx update` syncs all skill files to that directory.
+`octx link list` shows detected agents alongside registered links. The install,
+uninstall, and sync paths publish to the union of the two, deduplicated by path,
+so a directory that is both registered and detected is written once.
 
-### 9.3 Sync mechanism (per-platform)
+### 9.3 Projection mechanism (per-platform)
+
+Each skill is projected as a directory per arm — `<agent_dir>/<arm>-octx/SKILL.md` — the portable form an agent's skill loader reads. The directory name is the discoverable skill name (the arm name suffixed `-octx`), so a projection cannot collide with another skill's flat file. The projection also clears the forms an earlier octx version wrote for the same arm: a flat `<arm>.md` and an intermediate `<arm>/SKILL.md` directory.
 
 | Platform | Method | Rationale |
 |----------|--------|-----------|
 | Linux / macOS | Symlink | `ln -s` — lightweight, automatic updates, no space duplication |
-| Windows (user) | Hardlink + Junction | No admin required. Junction for dirs, hardlinks for files. |
+| Windows (user) | Hardlink | No admin required. |
 
 ```rust
-fn sync_skill_to_linked_dir(skill_name: &str, source: &Path, target_dir: &Path) -> Result<()> {
-    let target = target_dir.join(format!("{}.md", skill_name));
+/// The discoverable skill name for an arm: the arm name suffixed `-octx`.
+fn skill_name(arm: &str) -> String {
+    format!("{arm}-octx")
+}
+
+fn project_skill(arm: &str, source: &Path, agent_dir: &Path) -> Result<()> {
+    let dir = agent_dir.join(skill_name(arm));
+    std::fs::create_dir_all(&dir)?;
+    let target = dir.join("SKILL.md");
 
     #[cfg(unix)]
     {
@@ -589,23 +623,35 @@ fn sync_skill_to_linked_dir(skill_name: &str, source: &Path, target_dir: &Path) 
         std::fs::hard_link(source, &target)?;  // No admin needed
     }
 
+    // Remove projections an earlier octx version wrote for this arm:
+    // the flat `<arm>.md`, and the intermediate `<arm>/SKILL.md` directory.
+    let _ = std::fs::remove_file(agent_dir.join(format!("{arm}.md")));
+    if let (Ok(link), Ok(src)) = (
+        std::fs::canonicalize(agent_dir.join(arm).join("SKILL.md")),
+        std::fs::canonicalize(source),
+    ) {
+        if link == src {
+            let _ = std::fs::remove_dir_all(agent_dir.join(arm));
+        }
+    }
+
     Ok(())
 }
 ```
 
-The `sync_all()` function in `skills.rs`:
+The `sync_all()` function in `skills.rs` reconciles every installed skill into every registered directory:
 
 ```rust
 fn sync_all() -> Result<()> {
     let config = Config::load()?;
-    for (agent_name, agent_dir) in &config.links {
+    for (_agent_name, agent_dir) in &config.links {
         ensure_dir_exists(agent_dir)?;
         for entry in std::fs::read_dir(skills_dir())? {
             let entry = entry?;
             let name = entry.file_name().to_string_lossy().to_string();
             if name.ends_with(".md") {
                 let skill_name = name.trim_end_matches(".md");
-                sync_skill_to_linked_dir(skill_name, &entry.path(), agent_dir)?;
+                project_skill(skill_name, &entry.path(), agent_dir)?;
             }
         }
     }
@@ -1007,7 +1053,7 @@ Light. One file, optional managed by `octx link`. All fields have sensible defau
 | **6. Shell init + creds** | `octx init` + `octx creds` + `install.sh` | One-command PATH setup, auth storage |
 | **7. Registry** | `registry-index.json`, `octx search` | Remote registry lookup |
 | **8. Update (concurrent + skills + self-update)** | `update.rs` with ETag, worker pool, skill sync | `octx update` downloads everything + replaces octx itself + syncs skills in ~1s |
-| **9. First arm (dogfood)** | Build `fmt` as a real arm with `skill.md` | End-to-end: install, update, skills synced to agent |
+| **9. First arm (dogfood)** | Build `fmt` as a real arm with `skill.md` | End-to-end: install, update, skills projected to agent |
 | **10. Pi Zero test** | Cross-compile, deploy, benchmark | Confirmed ≤5MB RSS, ≤100ms cold start |
 
 ---
