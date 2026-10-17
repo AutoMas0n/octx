@@ -1387,7 +1387,7 @@ dependencies = [
 
 [[package]]
 name = "octx"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1411,7 +1411,7 @@ dependencies = [
 
 [[package]]
 name = "octx-agent"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
@@ -1425,7 +1425,7 @@ dependencies = [
 
 [[package]]
 name = "octx-creds"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -1443,7 +1443,7 @@ dependencies = [
 
 [[package]]
 name = "octx-deploy"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1451,7 +1451,7 @@ dependencies = [
 
 [[package]]
 name = "octx-fmt"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1460,7 +1460,7 @@ dependencies = [
 
 [[package]]
 name = "octx-harness"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1472,7 +1472,7 @@ dependencies = [
 
 [[package]]
 name = "octx-jam"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1488,7 +1488,7 @@ dependencies = [
 
 [[package]]
 name = "octx-parse"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "clap",
