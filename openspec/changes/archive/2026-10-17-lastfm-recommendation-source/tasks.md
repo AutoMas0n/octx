@@ -45,7 +45,7 @@
 - [x] 7.1 Run `jam discover --output qobuz` end to end on the scheduler box against real credentials — verify a playlist named with the run's UTC date exists with resolved tracks, and that a second run on the same day changes nothing.
 - [x] 7.2 Verify retention against the live account by running discovery enough times to exceed the limit — verify that only the newest ten remain, that no other playlist is removed, and that the keep-everything option removes nothing.
 - [x] 7.3 Add the daily `jam discover --output qobuz` line to the scheduler's crontab — verify `crontab -l` shows it and a manual invocation reproduces 7.1's result.
-- [ ] 7.4 Confirm ListenBrainz's own Last.fm connection is delivering scrobbles by observing listen counts rise while the submission line is disabled, then remove that line — verify `crontab -l` and a rising listen count with no submission job.
+- [x] 7.4 Confirm ListenBrainz's own Last.fm connection is delivering scrobbles by observing listen counts rise while the submission line is disabled, then remove that line — verify `crontab -l` and a rising listen count with no submission job.
 - [x] 7.5 Retire the `jam status && jam recs` crontab line once `discover` has produced a playlist, leaving `recs` available for manual use — verify `crontab -l`.
 
 ## Workflow follow-up
