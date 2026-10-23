@@ -39,6 +39,8 @@ Global options apply to every subcommand: `--account <name>`, `--user <name>`, `
 - `--dry-run` — resolve and report without writing, and without pruning. `--output qobuz` only.
 - `--output <json|qobuz>` — where the playlist document goes. Required.
 
+`discover` excludes what the account has already scrobbled *and* what a recent run already delivered, so the daily playlist rotates instead of repeating itself. A successful `--output qobuz` delivery records what it wrote to a per-listener memory at `{data_dir}/octx/jam/discovery-state.json` (the most recent 200 deliveries per listener); a `--dry-run` or `--output json` run records nothing. Delete that file to start fresh. The candidate pool is read wide — more similar artists per seed and more tracks per artist — and drawn round-robin across artists, so no single artist fills a playlist.
+
 ### Write side (`scrobble`)
 - `--source <ndjson|lastfm|listenbrainz>` — where the listens come from. Defaults to `ndjson`.
 - `--input <path|->` — NDJSON file, or `-` for standard input. Required by `--source ndjson` and rejected for the networked sources.

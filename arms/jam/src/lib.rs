@@ -18,4 +18,5 @@ pub mod qobuz;
 pub mod run;
 pub mod scrobble;
 pub mod sink;
+pub mod state;
 pub mod sync;

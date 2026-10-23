@@ -1,0 +1,14 @@
+schema: 1
+name: hello-test
+description: Connects to the octx agent over ACP and says hello
+agent: pi
+defaults:
+  permission_mode: approve-reads
+  timeout: 90
+  max_turns: 1
+  format: quiet
+  cwd: ./
+script:
+  path: agent_hello.sh
+  args: []
+  env: {}

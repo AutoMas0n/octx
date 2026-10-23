@@ -51,11 +51,15 @@ pub enum Command {
     ///
     /// Seeds from the account's own Last.fm listening — or `--seed-artist` or
     /// `--prompt` — fans out through the artists Last.fm calls similar, and
-    /// excludes what the account has already scrobbled. Needs the shared
-    /// `lastfm.api_key` and the account's `lastfm.user`; `--output qobuz`
-    /// additionally needs `qobuz.user_auth_token`. The default Qobuz playlist
-    /// is `Last.fm Discovery YYYY-MM-DD` for the run's UTC date, and older
-    /// discovery playlists are pruned to the newest ten by default.
+    /// excludes what the account has already scrobbled and what a recent run
+    /// delivered. Needs the shared `lastfm.api_key` and the account's
+    /// `lastfm.user`; `--output qobuz` additionally needs
+    /// `qobuz.user_auth_token`. The default Qobuz playlist is `Last.fm Discovery
+    /// YYYY-MM-DD` for the run's UTC date, and older discovery playlists are
+    /// pruned to the newest ten by default. A successful delivery records what
+    /// it wrote to a per-listener memory at
+    /// `{data_dir}/octx/jam/discovery-state.json`, so later runs rotate instead
+    /// of repeating; a `--dry-run` or `--output json` run records nothing.
     #[command(override_usage = "jam discover --output <json|qobuz> [OPTIONS]")]
     Discover {
         /// How many entries to ask for (default 25, maximum 100)

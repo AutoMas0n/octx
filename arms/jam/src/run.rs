@@ -6,7 +6,7 @@
 //! give is a failure on the read side — it must never reach a sink, because a
 //! sink's job is to converge and converging on nothing empties the playlist.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 
 use anyhow::{Context, Result, bail};
@@ -17,7 +17,7 @@ use crate::config::Config;
 use crate::credentials::{self, Selected};
 use crate::document::{ListenDocument, PlaylistDocument, Provenance};
 use crate::http::Http;
-use crate::{discover, lastfm, lb, qobuz, scrobble, sink, sync};
+use crate::{discover, lastfm, lb, qobuz, scrobble, sink, state, sync};
 
 /// Run one invocation.
 pub async fn run(cli: Cli, cfg: Config) -> Result<()> {
@@ -83,12 +83,33 @@ pub async fn run(cli: Cli, cfg: Config) -> Result<()> {
             keep,
             dry_run,
         } => {
+            // The memory is read before selection and written only after a
+            // playlist actually lands, so a rehearsal spends no recommendation.
+            let listener = context.discovery_listener()?;
+            let memory = state::Memory::open(cfg.state_dir.join(state::FILE));
+            let remembered = memory.recent_keys(&listener);
             let document = context
-                .discover_document(count, seed_artist.as_deref(), prompt.as_deref())
+                .discover_document(
+                    count,
+                    seed_artist.as_deref(),
+                    prompt.as_deref(),
+                    &remembered,
+                )
                 .await?;
+            let delivered = document.entries.clone();
             context
                 .deliver_playlist(document, output, playlist.as_deref(), dry_run, keep)
-                .await
+                .await?;
+            // A recommendation is only spent when a playlist landed: a dry run,
+            // a JSON dump, or a failed sync leaves the memory untouched. A
+            // memory failure never fails a run whose playlist already delivered.
+            if output == PlaylistSink::Qobuz && !dry_run {
+                memory.record(&listener, &delivered);
+                if let Err(error) = memory.save() {
+                    eprintln!("jam: the discovery memory was not updated: {error}");
+                }
+            }
+            Ok(())
         }
         Command::Status => context.status().await,
     }
@@ -134,6 +155,20 @@ impl Ctx<'_> {
         slot.as_ref().ok_or_else(|| {
             anyhow::anyhow!("internal error: the credential document was not loaded")
         })
+    }
+
+    /// The Last.fm user a discovery run speaks as: `--user`, else the selected
+    /// account's Last.fm user. Resolved before selection so the memory can be
+    /// read under the same key the run will write.
+    fn discovery_listener(&self) -> Result<String> {
+        let mut slot = None;
+        let selected = self.selected(&mut slot)?;
+        match self.user {
+            Some(user) => Ok(user.to_string()),
+            None => Ok(selected
+                .require(selected.lastfm_user(), "lastfm.user")?
+                .to_string()),
+        }
     }
 
     /// The user name a listen identity is derived from, when one is known
@@ -265,6 +300,7 @@ impl Ctx<'_> {
         count: Option<usize>,
         seed_artist: Option<&str>,
         prompt: Option<&str>,
+        remembered: &HashSet<String>,
     ) -> Result<PlaylistDocument> {
         let mut slot = None;
         let selected = self.selected(&mut slot)?;
@@ -289,7 +325,7 @@ impl Ctx<'_> {
             ),
         };
 
-        match discover::discover(self.http, &api_key, &user, &seed, count).await? {
+        match discover::discover(self.http, &api_key, &user, &seed, count, remembered).await? {
             discover::Discovered::Ready(entries) if !entries.is_empty() => {
                 Ok(PlaylistDocument::new(
                     Provenance {

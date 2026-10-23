@@ -32,6 +32,10 @@ pub struct Config {
     pub timeout: Duration,
     /// Where the credential store lives, when overridden for a test.
     pub store_dir: Option<PathBuf>,
+    /// Where the discovery memory lives. Defaults to `{data_dir}/octx/jam`, the
+    /// octx data directory's per-arm subdirectory. It is deliberately outside
+    /// the release-owned `storage/` mirror, which sync replaces wholesale.
+    pub state_dir: PathBuf,
 }
 
 impl Default for Config {
@@ -48,8 +52,19 @@ impl Default for Config {
             max_retries: 3,
             timeout: Duration::from_secs(30),
             store_dir: None,
+            state_dir: default_state_dir(),
         }
     }
+}
+
+/// The default discovery memory directory: `{data_dir}/octx/jam`.
+///
+/// Falls back to a relative path when the platform's data directory cannot be
+/// determined, so constructing a `Config` never fails.
+fn default_state_dir() -> PathBuf {
+    dirs::data_dir()
+        .map(|dir| dir.join("octx").join("jam"))
+        .unwrap_or_else(|| PathBuf::from("octx").join("jam"))
 }
 
 impl Config {
@@ -98,6 +113,11 @@ impl Config {
         {
             cfg.store_dir = Some(PathBuf::from(dir));
         }
+        if let Ok(dir) = std::env::var("OCTX_JAM_STATE_DIR")
+            && !dir.is_empty()
+        {
+            cfg.state_dir = PathBuf::from(dir);
+        }
         cfg
     }
 
@@ -105,5 +125,31 @@ impl Config {
     #[must_use]
     pub fn lb(&self, path: &str) -> String {
         format!("{}{path}", self.lb_api)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_default_state_dir_ends_with_octx_jam() {
+        let dir = default_state_dir();
+        assert!(
+            dir.ends_with("octx/jam"),
+            "state dir should end with `octx/jam`: {dir:?}"
+        );
+    }
+
+    #[test]
+    fn the_state_dir_override_wins() {
+        // A scratch value that cannot collide with a real path.
+        let scratch = "/tmp/octx-jam-state-override-test";
+        // SAFETY: this is the only test that touches this variable, and it
+        // restores it before returning.
+        unsafe { std::env::set_var("OCTX_JAM_STATE_DIR", scratch) };
+        let cfg = Config::from_env();
+        unsafe { std::env::remove_var("OCTX_JAM_STATE_DIR") };
+        assert_eq!(cfg.state_dir, PathBuf::from(scratch));
     }
 }

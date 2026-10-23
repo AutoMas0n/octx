@@ -1477,6 +1477,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "dirs",
  "octx-creds",
  "reqwest",
  "serde",

@@ -8,7 +8,7 @@
 
 mod support;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -175,11 +175,43 @@ fn titles(discovered: &Discovered) -> Vec<String> {
 
 /// Run the source over the catalog and return what it produced.
 async fn run(catalog: Catalog, seed: &Seed, count: Option<usize>) -> (Mock, Discovered) {
+    run_remembering(catalog, seed, count, &HashSet::new()).await
+}
+
+/// Run the source with a set of recently delivered tracks to exclude.
+async fn run_remembering(
+    catalog: Catalog,
+    seed: &Seed,
+    count: Option<usize>,
+    remembered: &HashSet<String>,
+) -> (Mock, Discovered) {
     let mock = catalog.mock();
-    let discovered = discover::discover(&http(&mock), API_KEY, USER, seed, count)
+    let discovered = discover::discover(&http(&mock), API_KEY, USER, seed, count, remembered)
         .await
         .expect("run the discovery source");
     (mock, discovered)
+}
+
+#[tokio::test]
+async fn a_remembered_track_is_not_delivered_again() {
+    // Two similar artists each with one track: with the first remembered, the
+    // second must still be delivered rather than the result coming up short.
+    let catalog = Catalog::with_similar(
+        &[],
+        &[("Seed", &["Sim A", "Sim B"])],
+        &[
+            ("Sim A", &[("Sim A", "A One")]),
+            ("Sim B", &[("Sim B", "B One")]),
+        ],
+    );
+    let remembered: HashSet<String> = [discover::exclusion_key("Sim A", "A One")]
+        .into_iter()
+        .collect();
+    let (_, discovered) =
+        run_remembering(catalog, &Seed::Artist("Seed".into()), Some(10), &remembered).await;
+    let titles = titles(&discovered);
+    assert!(!titles.contains(&"A One".to_string()), "{titles:?}");
+    assert!(titles.contains(&"B One".to_string()), "{titles:?}");
 }
 
 // ------------------------------------------------- seeding and fan-out
@@ -387,7 +419,7 @@ async fn the_seed_and_fan_out_caps_bound_the_calls() {
     );
     let top_track_calls = calls(&mock, "artist.getTopTracks");
     assert!(
-        top_track_calls <= MAX_SEEDS * 6,
+        top_track_calls <= MAX_SEEDS * (discover::MAX_SIMILAR + 1),
         "per-seed fan-out bounded, got {top_track_calls}"
     );
 }

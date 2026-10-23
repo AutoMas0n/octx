@@ -364,6 +364,10 @@ fn command(
 ) -> std::process::Command {
     let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_jam"));
     command.env("OCTX_JAM_STORE_DIR", store.path());
+    // Keep the discovery memory inside the scratch store, so a test that
+    // delivers a playlist never writes into the developer's real state dir.
+    // A test that needs its own location overrides this through `env` below.
+    command.env("OCTX_JAM_STATE_DIR", store.path().join("state"));
     command.env("OCTX_JAM_INTERVAL_MS", "0");
     command.env("OCTX_JAM_BACKOFF_MS", "10");
     for (key, value) in endpoints {

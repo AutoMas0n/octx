@@ -1,0 +1,8 @@
+{
+  "agent": "pi",
+  "prompt": "Say hello in one short sentence. Do not use tools.",
+  "skills": "ponytail",
+  "format": "text",
+  "timeout": 90,
+  "permission_mode": "approve-reads"
+}

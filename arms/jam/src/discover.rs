@@ -4,8 +4,9 @@
 //! ListenBrainz's collaborative filtering. The account's own listening supplies
 //! the seeds, each seed expands into the artists Last.fm calls similar to it,
 //! and those artists' popular tracks become the candidates. Anything the
-//! account has already scrobbled is excluded, and the candidates are drawn
-//! across seeds so that one artist cannot fill the result.
+//! account has already scrobbled — or recently received from a discovery run —
+//! is excluded, and the candidates are drawn round-robin across artists so
+//! that no single artist can fill the result.
 //!
 //! Last.fm yields artist and track *names* and no identifiers, so the entries
 //! this source produces carry no recording MBID. That is why `Entry`'s MBID
@@ -23,10 +24,10 @@ use crate::lastfm::{self, Track};
 pub const MAX_SEEDS: usize = 5;
 
 /// How many similar artists one seed contributes, at most.
-pub const MAX_SIMILAR: usize = 5;
+pub const MAX_SIMILAR: usize = 10;
 
 /// How many popular tracks one artist contributes, at most.
-pub const MAX_TRACKS_PER_ARTIST: usize = 3;
+pub const MAX_TRACKS_PER_ARTIST: usize = 10;
 
 /// How many already-scrobbled tracks are read for exclusion, at most.
 pub const MAX_KNOWN: usize = 200;
@@ -79,6 +80,7 @@ pub async fn discover(
     user: &str,
     seed: &Seed,
     count: Option<usize>,
+    remembered: &HashSet<String>,
 ) -> Result<Discovered> {
     let wanted = count.unwrap_or(DEFAULT_COUNT).min(MAX_COUNT);
 
@@ -87,7 +89,7 @@ pub async fn discover(
     // find nothing on a young account, which is the case prompts exist for.
     if let Seed::Tag(tag) = seed {
         let tracks = lastfm::tag_top_tracks(http, api_key, tag, wanted).await?;
-        let known = known_tracks(http, api_key, user).await?;
+        let known = known_set(http, api_key, user, remembered).await?;
         let entries = interleave(vec![tracks], &known, wanted);
         return Ok(if entries.is_empty() {
             Discovered::Nothing
@@ -106,25 +108,23 @@ pub async fn discover(
     }
 
     // One exclusion read for the whole run, before any candidate is looked at.
-    let known = known_tracks(http, api_key, user).await?;
+    let known = known_set(http, api_key, user, remembered).await?;
 
-    // Each seed contributes a bucket: the seed artist's own popular tracks and
-    // those of the artists Last.fm calls similar to it. Buckets stay separate
-    // so the draw below can spread across them.
-    let mut buckets = Vec::with_capacity(seeds.len());
+    // Each artist contributes its own bucket, so the draw below spreads across
+    // artists rather than across seeds: a seed's own artist and every artist
+    // Last.fm calls similar to it each get a turn before any repeats.
+    let mut buckets = Vec::new();
     for seed_artist in &seeds {
         let mut artists = vec![seed_artist.clone()];
         artists.extend(lastfm::similar_artists(http, api_key, seed_artist, MAX_SIMILAR).await?);
         artists.dedup();
 
-        let mut bucket = Vec::new();
         for artist in artists.iter().take(MAX_SIMILAR + 1) {
             let tracks =
                 lastfm::artist_top_tracks(http, api_key, artist, MAX_TRACKS_PER_ARTIST).await?;
-            bucket.extend(tracks);
-        }
-        if !bucket.is_empty() {
-            buckets.push(bucket);
+            if !tracks.is_empty() {
+                buckets.push(tracks);
+            }
         }
     }
 
@@ -136,22 +136,31 @@ pub async fn discover(
     })
 }
 
-/// The tracks an account has already scrobbled, keyed for case-insensitive
-/// matching on artist and title.
-async fn known_tracks(http: &Http, api_key: &str, user: &str) -> Result<HashSet<String>> {
+/// The tracks to exclude: the account's own scrobbles, plus what a recent
+/// discovery run already delivered to it, keyed for case-insensitive matching
+/// on artist and title.
+async fn known_set(
+    http: &Http,
+    api_key: &str,
+    user: &str,
+    remembered: &HashSet<String>,
+) -> Result<HashSet<String>> {
     let tracks = lastfm::existing_tracks(http, api_key, user, MAX_KNOWN).await?;
-    Ok(tracks
+    let mut known: HashSet<String> = tracks
         .into_iter()
-        .map(|track| exclusion_key(&track))
-        .collect())
+        .map(|track| exclusion_key(&track.artist, &track.title))
+        .collect();
+    known.extend(remembered.iter().cloned());
+    Ok(known)
 }
 
 /// Draw candidates across the buckets, round-robin.
 ///
-/// Each round takes one track from each bucket in turn, so a bucket that holds
-/// many acceptable candidates cannot fill the result on its own. A candidate is
-/// skipped when it is already scrobbled or already drawn, both matched
-/// case-insensitively on artist and title.
+/// Each round takes one track from each bucket — one bucket per artist — in
+/// turn, so an artist that holds many acceptable candidates cannot fill the
+/// result on its own. A candidate is skipped when it is already scrobbled,
+/// already delivered recently, or already drawn, all matched case-insensitively
+/// on artist and title.
 fn interleave(buckets: Vec<Vec<Track>>, known: &HashSet<String>, count: usize) -> Vec<Entry> {
     let mut drawn: HashSet<String> = HashSet::new();
     let mut entries = Vec::with_capacity(count);
@@ -168,7 +177,7 @@ fn interleave(buckets: Vec<Vec<Track>>, known: &HashSet<String>, count: usize) -
                 continue;
             };
             progressed = true;
-            let key = exclusion_key(track);
+            let key = exclusion_key(&track.artist, &track.title);
             if known.contains(&key) || !drawn.insert(key) {
                 continue;
             }
@@ -182,12 +191,12 @@ fn interleave(buckets: Vec<Vec<Track>>, known: &HashSet<String>, count: usize) -
 
 /// The key exclusion and deduplication match on: artist and title, folded to
 /// one case so that Last.fm's spelling differences cannot let a repeat through.
-fn exclusion_key(track: &Track) -> String {
-    format!(
-        "{}\t{}",
-        track.artist.to_lowercase(),
-        track.title.to_lowercase()
-    )
+///
+/// The discovery memory ([`crate::state`]) keys on the same value, so the source
+/// and the memory always agree on what counts as the same track.
+#[must_use]
+pub fn exclusion_key(artist: &str, title: &str) -> String {
+    format!("{}\t{}", artist.to_lowercase(), title.to_lowercase())
 }
 
 /// One candidate, as a playlist entry. There is no MBID to carry: Last.fm
@@ -218,8 +227,8 @@ mod tests {
     #[test]
     fn the_exclusion_key_folds_case() {
         assert_eq!(
-            exclusion_key(&track("Chappell Roan", "Good Luck, Babe!")),
-            exclusion_key(&track("chappell roan", "good luck, babe!"))
+            exclusion_key("Chappell Roan", "Good Luck, Babe!"),
+            exclusion_key("chappell roan", "good luck, babe!")
         );
     }
 
@@ -242,7 +251,7 @@ mod tests {
 
     #[test]
     fn the_draw_skips_known_and_repeated_tracks() {
-        let known: HashSet<String> = [exclusion_key(&track("A", "a1"))].into_iter().collect();
+        let known: HashSet<String> = [exclusion_key("A", "a1")].into_iter().collect();
         let buckets = vec![
             vec![track("A", "a1"), track("A", "a2")],
             vec![track("A", "A2")],
