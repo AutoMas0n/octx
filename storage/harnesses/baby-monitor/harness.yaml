@@ -1,0 +1,14 @@
+schema: 1
+name: baby-monitor
+description: Capture one frame from a baby-camera feed and ask the agent whether the baby is on their stomach or back. Run in a loop from the shell.
+agent: pi
+defaults:
+  permission_mode: approve-reads
+  timeout: 120
+  max_turns: 1
+  format: quiet
+  cwd: ./runtime
+script:
+  path: monitor.py
+  args: []
+  env: {}

@@ -1,14 +1,14 @@
 schema: 1
 name: hello-test
-description: Connects to the octx agent over ACP and says hello
+description: Minimal bash harness that prints Hello, World!
 agent: pi
 defaults:
   permission_mode: approve-reads
-  timeout: 90
+  timeout: 10
   max_turns: 1
-  format: quiet
+  format: text
   cwd: ./
 script:
-  path: agent_hello.sh
+  path: hello.sh
   args: []
   env: {}
