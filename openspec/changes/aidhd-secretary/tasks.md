@@ -2,10 +2,10 @@
 
 ## 1. Schema and model
 
-- [ ] 1.1 Add `pinned`, `decomposed_at`, and `last_completed_at` to the task schema and model, defaulting to false/NULL; verify unit tests read and write each field and that `done` sets `last_completed_at`.
-- [ ] 1.2 Add the `decisions` table and a `Decision` model with kind, old due date, new due date, reason, details JSON, run id, timestamps, and `undone_at`; verify a unit test inserts and reads a decision of each kind.
-- [ ] 1.3 Add the `secretary_runs` table and a `Run` model for status and heartbeat; verify a unit test records a successful and a failed run.
-- [ ] 1.4 Add schema migration on open so existing stores gain the new column and tables; verify a test opens an older store and confirms the additions.
+- [x] 1.1 Add `pinned`, `decomposed_at`, and `last_completed_at` to the task schema and model, defaulting to false/NULL; verify unit tests read and write each field and that `done` sets `last_completed_at`.
+- [x] 1.2 Add the `decisions` table and a `Decision` model with kind, old due date, new due date, reason, details JSON, run id, timestamps, and `undone_at`; verify a unit test inserts and reads a decision of each kind.
+- [x] 1.3 Add the `secretary_runs` table and a `Run` model for status and heartbeat; verify a unit test records a successful and a failed run.
+- [x] 1.4 Add schema migration on open so existing stores gain the new column and tables; verify a test opens an older store and confirms the additions.
 
 ## 2. Policy engine
 
