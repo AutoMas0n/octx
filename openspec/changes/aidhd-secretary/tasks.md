@@ -46,20 +46,19 @@
 - [ ] 5a.3 Implement the LLM decomposition path as one batched request per run, capped at `max_decompositions_per_run`, returning at most 5 subtasks per parent; validate non-empty distinct titles and a 120-character limit, and reject unsafe proposals; verify a test rejects a duplicate or oversized title and that a run with several candidates makes one request.
 - [ ] 5a.4 Implement the deterministic fallback that splits on " and " or commas into at most 3 parts; verify a test skips a title with no separator, records a `skipped` decision, and does not retry that task within 7 days.
 - [ ] 5a.5 Create subtasks with `parent_task_id`, inherited category/tags/priority, and schedule each within the bounded horizon against running day counts; clear the parent's due date and store the old one in the decision; verify an integration test shows the parent open with a cleared due date and still visible in `list`, the children linked, and the decision details containing the child ids.
-- [ ] 5a.8 Render decomposed parents in `list` with a step-count marker from open children and expose `step_count` in `--json`; verify a parent with three open children shows `[3 steps]` and the JSON field.
+- [ ] 5a.6 Implement undo for decomposition: cancel only the child ids listed in the decision's details, leave manually added children untouched, clear `decomposed_at`, keep the parent open; verify a test confirms no deletion and that the parent can be decomposed again.
 - [ ] 5a.7 Exclude decomposed parents from daily-cap counting, overdue rescheduling, undated fill, and `next` selection; verify a unit test confirms each exclusion.
 - [ ] 5a.8 Render a `[N steps]` marker for decomposed parents in `list` and a `step_count` field in `list --json`, computed from open children; verify an integration test shows the marker in human output and the field in JSON, and that the marker does not affect scheduling.
-- [ ] 5a.6 Implement undo for decomposition: cancel only the child ids listed in the decision's details, leave manually added children untouched, clear `decomposed_at`, keep the parent open; verify a test confirms no deletion and that the parent can be decomposed again.
-- [ ] 5a.8 Add a `--cancelled` filter to `list` so undone subtasks remain reachable; verify an integration test lists a cancelled child.
+- [ ] 5a.9 Add a `--cancelled` filter to `list` so undone subtasks remain reachable; verify an integration test lists a cancelled child.
 
 ## 5b. Intelligent auto-scheduling on add
 
 - [ ] 5b.1 Add a deterministic scheduler that picks the first day at or after the priority start with fewer than `daily_cap` open tasks, within the configured horizon; verify unit tests cover today/tomorrow/+2 starts, capacity skip, horizon exhaustion, and no past dates.
 - [ ] 5b.2 Wire auto-scheduling into `add` when no due date came from flags or parsing; print the assigned date and reason to stderr and keep stdout as the task id; verify an integration test captures both streams and that `--json` emits the scheduling fields without a stderr note.
 - [ ] 5b.3 Add `--unscheduled` and honor `AIDHD_AUTO_SCHEDULE=0`; verify a test confirms the due date stays empty and no note is printed.
+- [ ] 5b.4 Make the secretary pass fill undated open tasks that slipped in from imports or older data and record a `scheduled` decision; verify an integration test covers the fill and the decision row.
 - [ ] 5b.5 Exclude recurring tasks from auto-scheduling and derive their next occurrence from the recurrence pattern; verify a test confirms a recurring undated task is not given an arbitrary date.
 - [ ] 5b.6 Read `AIDHD_DAILY_CAP`, `AIDHD_HORIZON_DAYS`, `AIDHD_QUIET_HOURS`, `AIDHD_STUCK_AFTER_DAYS`, `AIDHD_STUCK_AFTER_MOVES`, `AIDHD_MAX_DECOMPOSITIONS`, and `AIDHD_SECRETARY_CADENCE` through the config layer, with env overriding the file; verify a test sets each variable and observes the policy change.
-- [ ] 5b.4 Make the secretary pass fill undated open tasks that slipped in from imports or older data and record a `scheduled` decision; verify an integration test covers the fill and the decision row.
 
 ## 6. Skill and scheduling
 
