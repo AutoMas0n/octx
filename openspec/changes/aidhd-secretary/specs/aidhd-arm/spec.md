@@ -8,17 +8,17 @@ When `add` receives no due date from flags or parsing, the arm SHALL assign one 
 
 #### Scenario: Undated high-priority task is scheduled today when capacity allows
 
-- **WHEN** a user adds a high-priority task with no date and today has fewer than 3 open tasks
+- **WHEN** a user adds a high-priority task with no date and today has fewer open tasks than the daily cap
 - **THEN** the task is stored with today's date and stderr reports the assignment and reason
 
 #### Scenario: Capacity is respected
 
-- **WHEN** the first candidate day already has 3 open tasks
+- **WHEN** the first candidate day is already at the daily cap
 - **THEN** the task is scheduled on the next day with capacity within the horizon
 
 #### Scenario: No capacity within the horizon
 
-- **WHEN** every day in the 14-day horizon is at capacity
+- **WHEN** every day in the configured horizon is at capacity
 - **THEN** the task remains undated and stderr explains that no open day was available
 
 #### Scenario: Explicit opt-out
@@ -33,7 +33,7 @@ When `add` receives no due date from flags or parsing, the arm SHALL assign one 
 
 #### Scenario: Horizon bounds the search
 
-- **WHEN** the earliest open day for a task would be more than 14 days away
+- **WHEN** the earliest open day for a task would be beyond the configured horizon
 - **THEN** the arm leaves the task undated rather than scheduling beyond the horizon
 
 #### Scenario: User-supplied date is never overridden

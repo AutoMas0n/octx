@@ -99,7 +99,7 @@ Children are never decomposed. This caps the tree at one level and prevents a fi
 
 The secretary selects stuck tasks ordered by longest overdue first, then priority, capped at `max_decompositions_per_run` (default 3). It sends all selected candidates to the LLM in **one batched request**, not one request per task. Each subtask title must be non-empty, distinct, and at most 120 characters; a proposal that violates these rules is rejected and falls back for that parent only. Subtasks inherit the parent's category, tags, and priority, and are linked with `parent_task_id`. Each child is scheduled at creation time against the running day counts, so children do not silently overfill a day.
 
-After decomposition the parent stays open and visible in `list`, keeps its title, and keeps its previous due date in the decision's `old_due_date`, but its due date is cleared so it is not treated as actionable work. So a cleared date does not look like a bug or an unfinished edit, `list` renders the parent with a visible step-count marker such as `[3 steps]` next to the title and a matching `step_count` field in `--json`. The marker is derived from the count of open children whose `parent_task_id` points at the parent; it is presentation only and changes no scheduling state. While `decomposed_at` is set, the parent is excluded from daily-cap counting, overdue rescheduling, undated fill, and `next` selection, because its children carry the load. It is never auto-completed; the user closes it manually when the steps are done. This avoids the opaque behavior of silently moving the parent's date to follow its children: the parent simply stops being scheduled while it is broken down. Because a parent with a cleared due date would otherwise look broken in `list`, the list renders it with a `[3 steps]` marker computed from its open children, and `list --json` exposes the same count as `step_count`. The marker is presentation only; it does not affect scheduling. If no child could be scheduled within the horizon, the parent still stays excluded from scheduling so it does not churn.
+After decomposition the parent stays open and visible in `list`, keeps its title, and keeps its previous due date in the decision's `old_due_date`, but its due date is cleared so it is not treated as actionable work. So a cleared date does not look like a bug or an unfinished edit, `list` renders the parent with a visible step-count marker such as `[3 steps]` next to the title and a matching `step_count` field in `--json`. The marker is derived from the count of open children whose `parent_task_id` points at the parent; it is presentation only and changes no scheduling state. While `decomposed_at` is set, the parent is excluded from daily-cap counting, overdue rescheduling, undated fill, and `next` selection, because its children carry the load. It is never auto-completed; the user closes it manually when the steps are done. This avoids the opaque behavior of silently moving the parent's date to follow its children: the parent simply stops being scheduled while it is broken down. If no child could be scheduled within the horizon, the parent still stays excluded from scheduling so it does not churn.
 
 Without an LLM, the fallback splits the title on `" and "` or commas into at most 3 non-empty parts. If only one part remains, the task is skipped with a `skipped` decision rather than being force-split. To stop a single unsplittable title from producing a skipped row every run, the pass does not attempt decomposition again for a task whose latest decision is `skipped` within the last 7 days.
 
@@ -111,7 +111,7 @@ When `add` has no due date from flags or parsing, the arm schedules deterministi
 
 - start day: high = today, medium = tomorrow, low = today + 2 days;
 - choose the first day at or after the start with fewer than `daily_cap` open tasks;
-- never choose a date in the past or beyond the 14-day horizon;
+- never choose a date in the past or beyond the configured horizon (default 14 days);
 - if no day has capacity, leave the task undated and explain on stderr.
 
 An explicit `--unscheduled` flag or `AIDHD_AUTO_SCHEDULE=0` disables auto-scheduling. The assigned date and reason go to stderr; stdout remains the task id so piping is unchanged. With `--json`, the date and reason appear as fields on the single JSON object and no stderr note is printed, so JSON consumers get one document and nothing else. The secretary pass also fills undated open tasks that were imported or created before this behavior existed.
@@ -139,6 +139,14 @@ All policy values are read through the arm's existing config layer. Environment 
 
 An **open day** means a day whose count of open, non-decomposed tasks is below `AIDHD_DAILY_CAP`.
 
+### 14. Tie-break LLM exposure
+
+The tie-break call is automatic, not a user-facing flag. The deterministic pass runs first and resolves the outcome set; the LLM is consulted only when two or more equally valid targets remain, and it may only order or explain among them. Because it cannot change the set of candidates or violate a hard invariant, an explicit switch would add surface area without changing safety. A run with no tie makes no request. The tie-break is skipped when no credential is configured, and the deterministic order stands.
+
+### 15. Decision retention
+
+Decisions are kept indefinitely with no automatic size guard. Rows are small text records, and a silently truncated audit trail would defeat the undo and explanation guarantees. `aidhd decisions prune` remains the only deletion path, runs only on explicit request, and refuses to remove a row referenced by a later undone decision. If storage ever becomes a practical problem, the answer is a documented prune cadence rather than an implicit cap.
+
 ## Risks / Trade-offs
 
 - **Over-rescheduling erodes trust** -> deterministic bounds, pinned tasks, and undo keep moves predictable.
@@ -159,8 +167,3 @@ An **open day** means a day whose count of open, non-decomposed tasks is below `
 ## Migration Plan
 
 The core schema is extended with `pinned` and the two new tables on first open. Existing tasks default to `pinned = 0`. No task data is rewritten. The secretary is additive: without running the command, the core arm behaves exactly as before.
-
-## Open Questions
-
-- Whether the tie-break LLM call should be exposed as a flag or enabled automatically. Deterministic policy remains the default either way, and the call only happens when a real tie exists.
-- Whether indefinite retention needs a hard size guard after years of use; `decisions prune` covers it for now.

@@ -11,7 +11,7 @@
 
 - [ ] 2.1 Implement daily load counting and overload detection against a configurable daily cap; verify unit tests cover under-cap, at-cap, and over-cap days.
 - [ ] 2.2 Implement same-time collision detection and deterministic tie-breaking by priority then creation time; verify a unit test separates two tasks with the same due timestamp.
-- [ ] 2.3 Implement bounded rescheduling to the next open day within a 14-day horizon; verify tests cover success, horizon exhaustion, and no move into the past.
+- [ ] 2.3 Implement bounded rescheduling to the next open day within the configured horizon; verify tests cover success, horizon exhaustion, and no move into the past.
 - [ ] 2.4 Exclude pinned and recurring tasks from overdue rescheduling; verify tests confirm each exclusion.
 - [ ] 2.5 Implement a single-transaction pass that writes decisions and updates due dates atomically; verify a test rolls back on a mid-pass failure.
 - [ ] 2.6 Implement the fixed stage order (decompose, undated fill, overdue reschedule, overload/collision, optional tie-break) in one pass; verify a test with both a stuck task and an overloaded day ends with every day at or under the cap.
@@ -54,7 +54,7 @@
 
 ## 5b. Intelligent auto-scheduling on add
 
-- [ ] 5b.1 Add a deterministic scheduler that picks the first day at or after the priority start with fewer than `daily_cap` open tasks, within the 14-day horizon; verify unit tests cover today/tomorrow/+2 starts, capacity skip, horizon exhaustion, and no past dates.
+- [ ] 5b.1 Add a deterministic scheduler that picks the first day at or after the priority start with fewer than `daily_cap` open tasks, within the configured horizon; verify unit tests cover today/tomorrow/+2 starts, capacity skip, horizon exhaustion, and no past dates.
 - [ ] 5b.2 Wire auto-scheduling into `add` when no due date came from flags or parsing; print the assigned date and reason to stderr and keep stdout as the task id; verify an integration test captures both streams and that `--json` emits the scheduling fields without a stderr note.
 - [ ] 5b.3 Add `--unscheduled` and honor `AIDHD_AUTO_SCHEDULE=0`; verify a test confirms the due date stays empty and no note is printed.
 - [ ] 5b.5 Exclude recurring tasks from auto-scheduling and derive their next occurrence from the recurrence pattern; verify a test confirms a recurring undated task is not given an arbitrary date.
@@ -65,7 +65,7 @@
 
 - [ ] 6.1 Document `secretary`, `decisions`, `undo`, `pin`, and `unpin` in `skill.md`; verify the text appears in the `Usage` and `Options` sections.
 - [ ] 6.2 Add cron and `termux-job-scheduler` examples for the secretary pass and the health check; verify the commands run as written against a temporary store.
-- [ ] 6.3 Document the daily cap, quiet-hours defaults, 14-day horizon, decomposition thresholds, and configuration variables; verify each value appears in the `Options` or `Prerequisites` section.
+- [ ] 6.3 Document the daily cap, quiet-hours defaults, configured horizon (default 14 days), decomposition thresholds, and configuration variables; verify each value appears in the `Options` or `Prerequisites` section.
 - [ ] 6.4 Document how to inspect and undo decisions and how to detect a dead scheduler; verify the health-check example runs as written.
 
 ## 7. Integration checks

@@ -35,7 +35,7 @@ Stages run in this order in a single transaction: stuck-task decomposition, unda
 
 ### Rescheduling target and bounds
 
-Overdue tasks move to the next open day within a 14-day horizon. The default daily cap is 3 open tasks per day. A task is never moved into the past, never moved more than 14 days forward, and never moved if pinned. Recurring tasks advance by their own pattern and are not rescheduled as overdue items.
+Overdue tasks move to the next open day within the configured horizon (default 14 days). The default daily cap is 3 open tasks per day. A task is never moved into the past, never moved beyond the configured horizon, and never moved if pinned. Recurring tasks advance by their own pattern and are not rescheduled as overdue items.
 
 ### Recurring-task catch-up
 
@@ -61,7 +61,7 @@ After decomposition the parent stays open and visible in `list`, keeps its title
 
 ### Intelligent auto-scheduling on add
 
-When `add` receives no due date from flags or parsing, the arm assigns one deterministically: high priority starts today, medium tomorrow, low in two days; the first day at or after that start with fewer than 3 open tasks wins. If no day within the 14-day horizon has capacity, the task stays undated and the arm says why on stderr. An explicit `--unscheduled` flag or `AIDHD_AUTO_SCHEDULE=0` opts out. The assigned date and reason are reported on stderr so stdout stays the task id; with `--json` they are fields on the single JSON object and nothing is printed to stderr. Recurring tasks added without a date are not auto-scheduled; their next occurrence comes from the recurrence pattern. The secretary pass separately fills undated open tasks that slipped in from imports or older data.
+When `add` receives no due date from flags or parsing, the arm assigns one deterministically: high priority starts today, medium tomorrow, low in two days; the first day at or after that start with fewer than the daily cap of open tasks wins. If no day within the configured horizon has capacity, the task stays undated and the arm says why on stderr. An explicit `--unscheduled` flag or `AIDHD_AUTO_SCHEDULE=0` opts out. The assigned date and reason are reported on stderr so stdout stays the task id; with `--json` they are fields on the single JSON object and nothing is printed to stderr. Recurring tasks added without a date are not auto-scheduled; their next occurrence comes from the recurrence pattern. The secretary pass separately fills undated open tasks that slipped in from imports or older data.
 
 ### Configuration surface
 

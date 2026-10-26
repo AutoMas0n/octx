@@ -18,7 +18,7 @@ The arm SHALL provide a one-shot `secretary` command that reviews open, unpinned
 
 #### Scenario: Rescheduling is bounded
 
-- **WHEN** the next open day exceeds the configured 14-day horizon
+- **WHEN** the next open day exceeds the configured horizon
 - **THEN** the secretary leaves the task in place, records a skipped decision, and reports why
 
 #### Scenario: Pass is idempotent
@@ -133,7 +133,7 @@ The secretary SHALL send at most one action prompt per run. The prompt SHALL com
 
 ### Requirement: Deterministic policy before LLM
 
-The secretary SHALL apply deterministic rescheduling policy first. An LLM MAY explain a decision or tie-break between equally valid targets but SHALL NOT violate hard constraints: no moving pinned tasks, no moving into the past, no exceeding the daily cap, no moving beyond the 14-day horizon, and no completing tasks. If the LLM is unavailable or fails, the deterministic outcome SHALL stand.
+The secretary SHALL apply deterministic rescheduling policy first. An LLM MAY explain a decision or tie-break between equally valid targets but SHALL NOT violate hard constraints: no moving pinned tasks, no moving into the past, no exceeding the daily cap, no moving beyond the configured horizon, and no completing tasks. If the LLM is unavailable or fails, the deterministic outcome SHALL stand.
 
 #### Scenario: LLM unavailable
 
@@ -268,7 +268,7 @@ The secretary SHALL assign a due date to open undated tasks that were not schedu
 
 #### Scenario: Undated task without capacity stays empty
 
-- **WHEN** no day within the 14-day horizon has capacity
+- **WHEN** no day within the configured horizon has capacity
 - **THEN** the task remains undated and the secretary records a `skipped` decision explaining why
 
 #### Scenario: Recurring undated task is left to recurrence
