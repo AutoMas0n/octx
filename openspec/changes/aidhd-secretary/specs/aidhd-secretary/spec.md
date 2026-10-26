@@ -183,6 +183,15 @@ The secretary SHALL detect open, unpinned, non-recurring tasks that are not bein
 - **WHEN** the secretary runs again after decomposing a task
 - **THEN** it does not create a second set of subtasks for the same parent
 
+### Requirement: Decomposed parent presentation
+
+A decomposed parent SHALL remain visible in `list` with a step-count marker derived from its open children, so its cleared due date is explained rather than looking broken. The marker SHALL appear as text in human output and as a `step_count` field in `--json`. The marker is presentation only and SHALL NOT change scheduling state.
+
+#### Scenario: Decomposed parent is explained in list
+
+- **WHEN** a parent has been decomposed and has three open children
+- **THEN** `list` shows the parent with a `[3 steps]` marker and `list --json` includes `step_count: 3` for it
+
 #### Scenario: Task with children is left alone
 
 - **WHEN** an open task already has one or more children
