@@ -137,6 +137,9 @@ pub struct Task {
     pub parent_task_id: Option<String>,
     pub notified_at: Option<String>,
     pub completed_at: Option<String>,
+    pub last_completed_at: Option<String>,
+    pub decomposed_at: Option<String>,
+    pub pinned: bool,
     pub created_at: String,
     pub updated_at: String,
     #[serde(default)]
@@ -154,6 +157,7 @@ pub struct NewTask {
     pub due_date: Option<NaiveDate>,
     pub recurrence_pattern: Option<Recurrence>,
     pub parent_task_id: Option<String>,
+    pub pinned: bool,
     pub tags: Vec<String>,
 }
 
@@ -167,6 +171,8 @@ pub struct TaskUpdate {
     pub priority: Option<Priority>,
     pub category: Option<Option<String>>,
     pub due_date: Option<Option<NaiveDate>>,
+    pub pinned: Option<bool>,
+    pub decomposed_at: Option<Option<String>>,
 }
 
 /// Filters accepted by list queries.
@@ -187,6 +193,83 @@ pub struct Stats {
     pub completed: i64,
     pub cancelled: i64,
     pub total: i64,
+}
+
+/// What the secretary did to a task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DecisionKind {
+    Rescheduled,
+    Skipped,
+    Scheduled,
+    Decomposed,
+}
+
+impl DecisionKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DecisionKind::Rescheduled => "rescheduled",
+            DecisionKind::Skipped => "skipped",
+            DecisionKind::Scheduled => "scheduled",
+            DecisionKind::Decomposed => "decomposed",
+        }
+    }
+
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(value: &str) -> Option<Self> {
+        match value {
+            "rescheduled" => Some(DecisionKind::Rescheduled),
+            "skipped" => Some(DecisionKind::Skipped),
+            "scheduled" => Some(DecisionKind::Scheduled),
+            "decomposed" => Some(DecisionKind::Decomposed),
+            _ => None,
+        }
+    }
+}
+
+/// A recorded secretary decision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Decision {
+    pub id: String,
+    pub task_id: String,
+    pub kind: DecisionKind,
+    pub old_due_date: Option<NaiveDate>,
+    pub new_due_date: Option<NaiveDate>,
+    pub reason: String,
+    /// JSON payload for subtask ids and similar structured data.
+    pub details: Option<String>,
+    pub created_at: String,
+    pub undone_at: Option<String>,
+    pub run_id: String,
+}
+
+impl Decision {
+    /// True when the decision is still undoable.
+    pub fn is_undone(&self) -> bool {
+        self.undone_at.is_some()
+    }
+}
+
+/// Fields supplied when recording a decision.
+#[derive(Debug, Clone)]
+pub struct NewDecision {
+    pub task_id: String,
+    pub kind: DecisionKind,
+    pub old_due_date: Option<NaiveDate>,
+    pub new_due_date: Option<NaiveDate>,
+    pub reason: String,
+    pub details: Option<String>,
+    pub run_id: String,
+}
+
+/// A single secretary pass.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Run {
+    pub id: String,
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    pub decisions: i64,
+    pub error: Option<String>,
 }
 
 #[cfg(test)]

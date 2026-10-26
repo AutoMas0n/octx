@@ -5,7 +5,10 @@ use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::model::{NewTask, Priority, Recurrence, Stats, Status, Task, TaskFilter, TaskUpdate};
+use crate::model::{
+    Decision, DecisionKind, NewDecision, NewTask, Priority, Recurrence, Run, Stats, Status, Task,
+    TaskFilter, TaskUpdate,
+};
 
 #[derive(Debug, Error)]
 pub enum DbError {
@@ -38,6 +41,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     parent_task_id    TEXT REFERENCES tasks(id) ON DELETE CASCADE,
     notified_at       TEXT,
     completed_at      TEXT,
+    last_completed_at TEXT,
+    decomposed_at     TEXT,
+    pinned            INTEGER NOT NULL DEFAULT 0,
     created_at        TEXT NOT NULL,
     updated_at        TEXT NOT NULL
 );
@@ -51,6 +57,31 @@ CREATE TABLE IF NOT EXISTS task_tags (
     PRIMARY KEY (task_id, tag)
 );
 CREATE INDEX IF NOT EXISTS idx_task_tags_tag ON task_tags(tag);
+
+CREATE TABLE IF NOT EXISTS decisions (
+    id           TEXT PRIMARY KEY NOT NULL,
+    task_id      TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    kind         TEXT NOT NULL DEFAULT 'rescheduled'
+                 CHECK (kind IN ('rescheduled','skipped','scheduled','decomposed')),
+    old_due_date TEXT,
+    new_due_date TEXT,
+    reason       TEXT NOT NULL,
+    details      TEXT,
+    created_at   TEXT NOT NULL,
+    undone_at    TEXT,
+    run_id       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_decisions_task ON decisions(task_id);
+CREATE INDEX IF NOT EXISTS idx_decisions_run ON decisions(run_id);
+CREATE INDEX IF NOT EXISTS idx_decisions_created ON decisions(created_at);
+
+CREATE TABLE IF NOT EXISTS secretary_runs (
+    id          TEXT PRIMARY KEY NOT NULL,
+    started_at  TEXT NOT NULL,
+    finished_at TEXT,
+    decisions   INTEGER NOT NULL DEFAULT 0,
+    error       TEXT
+);
 "#;
 
 /// Resolve the arm-owned database path. `OCTX_AIDHD_DB` overrides it for tests.
@@ -91,9 +122,33 @@ fn configure(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Create tables and indexes if they are absent.
+/// Create tables and indexes if they are absent, and add columns that
+/// predate the current schema. Existing rows keep working unchanged.
 pub fn init_schema(conn: &Connection) -> Result<()> {
     conn.execute_batch(SCHEMA)?;
+    add_column_if_missing(conn, "tasks", "last_completed_at", "TEXT")?;
+    add_column_if_missing(conn, "tasks", "decomposed_at", "TEXT")?;
+    add_column_if_missing(conn, "tasks", "pinned", "INTEGER NOT NULL DEFAULT 0")?;
+    Ok(())
+}
+
+/// Add a column only when the table exists and the column does not.
+fn add_column_if_missing(conn: &Connection, table: &str, column: &str, spec: &str) -> Result<()> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let mut exists = false;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let name: String = row.get(1)?;
+        if name == column {
+            exists = true;
+            break;
+        }
+    }
+    drop(rows);
+    drop(stmt);
+    if !exists {
+        conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {spec}"))?;
+    }
     Ok(())
 }
 
@@ -126,6 +181,9 @@ fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
         parent_task_id: row.get("parent_task_id")?,
         notified_at: row.get("notified_at")?,
         completed_at: row.get("completed_at")?,
+        last_completed_at: row.get("last_completed_at")?,
+        decomposed_at: row.get("decomposed_at")?,
+        pinned: row.get::<_, i64>("pinned")? != 0,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
         tags: Vec::new(),
@@ -162,8 +220,8 @@ pub fn add_task(conn: &mut Connection, new: &NewTask) -> Result<Task> {
     tx.execute(
         "INSERT INTO tasks (
             id, title, description, notes, status, priority, category,
-            due_date, recurrence_pattern, parent_task_id, created_at, updated_at
-         ) VALUES (?1, ?2, ?3, ?4, 'pending', ?5, ?6, ?7, ?8, ?9, ?10, ?10)",
+            due_date, recurrence_pattern, parent_task_id, pinned, created_at, updated_at
+         ) VALUES (?1, ?2, ?3, ?4, 'pending', ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)",
         params![
             id,
             title,
@@ -174,6 +232,7 @@ pub fn add_task(conn: &mut Connection, new: &NewTask) -> Result<Task> {
             new.due_date.map(|d| d.format("%Y-%m-%d").to_string()),
             new.recurrence_pattern.map(Recurrence::as_str),
             new.parent_task_id,
+            i64::from(new.pinned),
             timestamp,
         ],
     )?;
@@ -282,6 +341,14 @@ pub fn update_task(conn: &Connection, id: &str, update: &TaskUpdate) -> Result<T
         values.push(due_date.map(|d| d.format("%Y-%m-%d").to_string()).into());
         assignments.push("notified_at = NULL".into());
     }
+    if let Some(pinned) = update.pinned {
+        assignments.push("pinned = ?".into());
+        values.push(i64::from(pinned).into());
+    }
+    if let Some(decomposed_at) = &update.decomposed_at {
+        assignments.push("decomposed_at = ?".into());
+        values.push(decomposed_at.clone().into());
+    }
 
     assignments.push("updated_at = ?".into());
     values.push(now().into());
@@ -305,7 +372,7 @@ pub fn complete_task_on(conn: &mut Connection, id: &str, today: NaiveDate) -> Re
     let timestamp = now();
     let tx = conn.transaction()?;
     tx.execute(
-        "UPDATE tasks SET status = 'completed', completed_at = ?2, updated_at = ?2 WHERE id = ?1",
+        "UPDATE tasks SET status = 'completed', completed_at = ?2, last_completed_at = ?2, updated_at = ?2 WHERE id = ?1",
         params![id, timestamp],
     )?;
 
@@ -315,8 +382,8 @@ pub fn complete_task_on(conn: &mut Connection, id: &str, today: NaiveDate) -> Re
         tx.execute(
             "INSERT INTO tasks (
                 id, title, description, notes, status, priority, category,
-                due_date, recurrence_pattern, parent_task_id, created_at, updated_at
-             ) VALUES (?1, ?2, ?3, ?4, 'pending', ?5, ?6, ?7, ?8, ?9, ?10, ?10)",
+                due_date, recurrence_pattern, parent_task_id, pinned, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, 'pending', ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)",
             params![
                 next_id,
                 task.title,
@@ -327,6 +394,7 @@ pub fn complete_task_on(conn: &mut Connection, id: &str, today: NaiveDate) -> Re
                 next_due.format("%Y-%m-%d").to_string(),
                 pattern.as_str(),
                 task.parent_task_id,
+                i64::from(task.pinned),
                 timestamp,
             ],
         )?;
@@ -462,6 +530,174 @@ pub fn parse_stored_date(value: &str) -> Result<NaiveDate> {
     parse_date(value)
 }
 
+fn row_to_decision(row: &rusqlite::Row<'_>) -> rusqlite::Result<Decision> {
+    let kind: String = row.get("kind")?;
+    let old_due: Option<String> = row.get("old_due_date")?;
+    let new_due: Option<String> = row.get("new_due_date")?;
+    Ok(Decision {
+        id: row.get("id")?,
+        task_id: row.get("task_id")?,
+        kind: DecisionKind::from_str(&kind).unwrap_or(DecisionKind::Rescheduled),
+        old_due_date: old_due
+            .as_deref()
+            .and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok()),
+        new_due_date: new_due
+            .as_deref()
+            .and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok()),
+        reason: row.get("reason")?,
+        details: row.get("details")?,
+        created_at: row.get("created_at")?,
+        undone_at: row.get("undone_at")?,
+        run_id: row.get("run_id")?,
+    })
+}
+
+fn row_to_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<Run> {
+    Ok(Run {
+        id: row.get("id")?,
+        started_at: row.get("started_at")?,
+        finished_at: row.get("finished_at")?,
+        decisions: row.get("decisions")?,
+        error: row.get("error")?,
+    })
+}
+
+/// Record a decision and return it.
+pub fn add_decision(conn: &Connection, new: &NewDecision) -> Result<Decision> {
+    get_task(conn, &new.task_id)?;
+    let id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO decisions (
+            id, task_id, kind, old_due_date, new_due_date, reason, details,
+            created_at, undone_at, run_id
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, ?9)",
+        params![
+            id,
+            new.task_id,
+            new.kind.as_str(),
+            new.old_due_date.map(|d| d.format("%Y-%m-%d").to_string()),
+            new.new_due_date.map(|d| d.format("%Y-%m-%d").to_string()),
+            new.reason,
+            new.details,
+            now(),
+            new.run_id,
+        ],
+    )?;
+    Ok(get_decision(conn, &id)?)
+}
+
+/// Fetch one decision by id.
+pub fn get_decision(conn: &Connection, id: &str) -> Result<Decision> {
+    conn.query_row("SELECT * FROM decisions WHERE id = ?1", [id], row_to_decision)
+        .optional()?
+        .ok_or_else(|| DbError::NotFound(format!("decision {id}")))
+}
+
+/// List decisions newest first, optionally filtered by task or run.
+pub fn list_decisions(
+    conn: &Connection,
+    task_id: Option<&str>,
+    run_id: Option<&str>,
+    limit: Option<usize>,
+) -> Result<Vec<Decision>> {
+    let mut sql = String::from("SELECT * FROM decisions WHERE 1=1");
+    let mut values: Vec<rusqlite::types::Value> = Vec::new();
+    if let Some(task_id) = task_id {
+        sql.push_str(" AND task_id = ?");
+        values.push(rusqlite::types::Value::Text(task_id.to_string()));
+    }
+    if let Some(run_id) = run_id {
+        sql.push_str(" AND run_id = ?");
+        values.push(rusqlite::types::Value::Text(run_id.to_string()));
+    }
+    sql.push_str(" ORDER BY created_at DESC, rowid DESC");
+    if let Some(limit) = limit {
+        sql.push_str(&format!(" LIMIT {limit}"));
+    }
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(values), row_to_decision)?;
+    let mut decisions = Vec::new();
+    for row in rows {
+        decisions.push(row?);
+    }
+    Ok(decisions)
+}
+
+/// Mark a decision undone. Returns the updated row.
+pub fn mark_decision_undone(conn: &Connection, id: &str) -> Result<Decision> {
+    let affected = conn.execute(
+        "UPDATE decisions SET undone_at = ?2 WHERE id = ?1 AND undone_at IS NULL",
+        params![id, now()],
+    )?;
+    if affected == 0 {
+        get_decision(conn, id)?;
+        return Err(DbError::Invalid(format!("decision already undone: {id}")));
+    }
+    Ok(get_decision(conn, id)?)
+}
+
+/// Delete one decision. Refuses when a later decision was undone against it.
+pub fn delete_decision(conn: &Connection, id: &str) -> Result<bool> {
+    let referenced: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM decisions WHERE undone_at IS NOT NULL AND task_id = 
+           (SELECT task_id FROM decisions WHERE id = ?1)",
+        [id],
+        |r| r.get(0),
+    )?;
+    if referenced > 0 {
+        return Err(DbError::Invalid(
+            "decision is referenced by an undone decision".into(),
+        ));
+    }
+    Ok(conn.execute("DELETE FROM decisions WHERE id = ?1", [id])? > 0)
+}
+
+/// Start a secretary run and return its id.
+pub fn start_run(conn: &Connection) -> Result<String> {
+    let id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO secretary_runs (id, started_at, finished_at, decisions, error)
+         VALUES (?1, ?2, NULL, 0, NULL)",
+        params![id, now()],
+    )?;
+    Ok(id)
+}
+
+/// Finish a run, recording the decision count or an error.
+pub fn finish_run(
+    conn: &Connection,
+    id: &str,
+    decisions: i64,
+    error: Option<&str>,
+) -> Result<()> {
+    let affected = conn.execute(
+        "UPDATE secretary_runs SET finished_at = ?2, decisions = ?3, error = ?4 WHERE id = ?1",
+        params![id, now(), decisions, error],
+    )?;
+    if affected == 0 {
+        return Err(DbError::NotFound(format!("run {id}")));
+    }
+    Ok(())
+}
+
+/// Fetch a run by id.
+pub fn get_run(conn: &Connection, id: &str) -> Result<Run> {
+    conn.query_row("SELECT * FROM secretary_runs WHERE id = ?1", [id], row_to_run)
+        .optional()?
+        .ok_or_else(|| DbError::NotFound(format!("run {id}")))
+}
+
+/// The most recent run, if any.
+pub fn latest_run(conn: &Connection) -> Result<Option<Run>> {
+    Ok(conn
+        .query_row(
+            "SELECT * FROM secretary_runs ORDER BY started_at DESC, rowid DESC LIMIT 1",
+            [],
+            row_to_run,
+        )
+        .optional()?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -486,6 +722,112 @@ mod tests {
             .collect();
         assert!(names.contains(&"tasks".to_string()));
         assert!(names.contains(&"task_tags".to_string()));
+        assert!(names.contains(&"decisions".to_string()));
+        assert!(names.contains(&"secretary_runs".to_string()));
+    }
+
+    #[test]
+    fn pinned_and_decomposed_at_round_trip() {
+        let mut conn = open_in_memory().unwrap();
+        let task = add_task(
+            &mut conn,
+            &NewTask {
+                title: "pin me".into(),
+                pinned: true,
+                ..NewTask::default()
+            },
+        )
+        .unwrap();
+        assert!(task.pinned);
+        let update = TaskUpdate {
+            decomposed_at: Some(Some("2026-01-02T03:04:05Z".into())),
+            ..TaskUpdate::default()
+        };
+        let updated = update_task(&conn, &task.id, &update).unwrap();
+        assert_eq!(updated.decomposed_at.as_deref(), Some("2026-01-02T03:04:05Z"));
+        assert!(updated.pinned);
+    }
+
+    #[test]
+    fn complete_sets_last_completed_at_and_reopen_keeps_it() {
+        let mut conn = open_in_memory().unwrap();
+        let task = add_task(&mut conn, &sample("finish me")).unwrap();
+        // A non-recurring completion yields no next occurrence.
+        assert!(complete_task(&mut conn, &task.id).unwrap().is_none());
+        let done = get_task(&conn, &task.id).unwrap();
+        assert_eq!(done.status, Status::Completed);
+        assert!(done.last_completed_at.is_some());
+        let stamp = done.last_completed_at.clone();
+        let reopened = reopen_task(&conn, &task.id).unwrap();
+        assert_eq!(reopened.last_completed_at, stamp);
+        assert_eq!(reopened.status, Status::Pending);
+    }
+
+    #[test]
+    fn decision_round_trip_and_undone() {
+        let conn = open_in_memory().unwrap();
+        let mut conn = conn;
+        let task = add_task(&mut conn, &sample("decide me")).unwrap();
+        let run_id = start_run(&conn).unwrap();
+        let decision = add_decision(
+            &conn,
+            &NewDecision {
+                task_id: task.id.clone(),
+                kind: DecisionKind::Rescheduled,
+                old_due_date: NaiveDate::from_ymd_opt(2026, 1, 1),
+                new_due_date: NaiveDate::from_ymd_opt(2026, 1, 3),
+                reason: "overdue".into(),
+                details: None,
+                run_id: run_id.clone(),
+            },
+        )
+        .unwrap();
+        assert_eq!(decision.kind, DecisionKind::Rescheduled);
+        assert!(!decision.is_undone());
+
+        let listed = list_decisions(&conn, Some(&task.id), None, None).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].old_due_date, NaiveDate::from_ymd_opt(2026, 1, 1));
+        assert_eq!(listed[0].new_due_date, NaiveDate::from_ymd_opt(2026, 1, 3));
+
+        let undone = mark_decision_undone(&conn, &decision.id).unwrap();
+        assert!(undone.is_undone());
+        assert!(mark_decision_undone(&conn, &decision.id).is_err());
+    }
+
+    #[test]
+    fn decision_requires_existing_task() {
+        let conn = open_in_memory().unwrap();
+        let run_id = start_run(&conn).unwrap();
+        let result = add_decision(
+            &conn,
+            &NewDecision {
+                task_id: "missing".into(),
+                kind: DecisionKind::Skipped,
+                old_due_date: None,
+                new_due_date: None,
+                reason: "nope".into(),
+                details: None,
+                run_id,
+            },
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn run_lifecycle_and_latest() {
+        let conn = open_in_memory().unwrap();
+        assert!(latest_run(&conn).unwrap().is_none());
+        let id = start_run(&conn).unwrap();
+        let started = get_run(&conn, &id).unwrap();
+        assert!(started.finished_at.is_none());
+        finish_run(&conn, &id, 2, None).unwrap();
+        let finished = latest_run(&conn).unwrap().unwrap();
+        assert_eq!(finished.id, id);
+        assert_eq!(finished.decisions, 2);
+        assert!(finished.finished_at.is_some());
+        assert!(finished.error.is_none());
+        assert!(finish_run(&conn, "missing", 0, None).is_err());
     }
 
     #[test]
