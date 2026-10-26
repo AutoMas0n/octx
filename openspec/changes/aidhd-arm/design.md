@@ -131,6 +131,12 @@ The arm exposes `aidhd due --notify`. A cron entry or `termux-job-scheduler` cal
 
 `0` success; `1` expected failure (missing credential, unavailable sink, not found); `2` usage error from `clap`. Diagnostics go to stderr; task output goes to stdout. No panic paths in library code.
 
+### 9. Secretary boundary
+
+The proactive secretary is a separate capability delivered as an immediate follow-up change (`aidhd-secretary`), not a daemon inside this arm. It reuses the same one-shot model: cron or `termux-job-scheduler` invokes a bounded `secretary` pass, which applies rescheduling decisions, records them for undo, and exits. This keeps the core arm's lifecycle simple while preserving the secretary intent.
+
+The core design must not block that follow-up. Due dates and statuses stay machine-readable, IDs stay stable, and the schema leaves room for a pinned/fixed flag and a decision log. The core's `next` and `due --notify` remain stateless nudges; they are not the secretary and must not be described as one. Completing the secretary proposal is the final v1 task, and implementation starts immediately after the core arm.
+
 ## Risks / Trade-offs
 
 - **SQLite lock contention under rapid widget taps** -> WAL mode, `busy_timeout`, and short transactions. If contention still appears, add a retry loop around `SQLITE_BUSY`.

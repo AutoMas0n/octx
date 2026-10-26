@@ -6,3 +6,8 @@
 # the harvest container runs the tools in place and leaves these behind
 __pycache__/
 *.pyc
+
+# local aidhd test databases
+.audit/
+.audit2/
+.demo/

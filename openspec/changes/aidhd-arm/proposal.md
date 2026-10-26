@@ -15,14 +15,14 @@ AIDHD is a personal BeeWare/Toga GUI task manager with AI natural-language parsi
 - Suppress duplicate notifications by recording when each task was notified; rescheduling or reopening a task clears that record.
 - Add smart next-action nudges: a `next` query and due notifications select the most urgent task and phrase it as a direct action prompt.
 - Support OpenRouter as an AI provider. Default to DeepSeek v4.1 Flash with thinking disabled; keep OpenAI available as a common alternative.
-- Make GUI-only and long-running features out of scope for v1: Toga views, tap-to-speak UI, Android alarm receivers, and the background secretary.
+- Make GUI-only and long-running features out of scope for v1: Toga views, tap-to-speak UI, and Android alarm receivers. The background secretary is not dropped; its proposal is completed as the final v1 task and its implementation is the immediate follow-up change.
 - Add `skill.md` conforming to `SKILL-CONTRACT.md`, with credentials named by host and obtained through `octx-creds`.
 - Treat AIDHD as an unfinished reference implementation: preserve behavior and data shape, but do not assume its architecture, UI, or edge-case handling is correct.
 
 ## Capabilities
 
 ### New Capabilities
-- `aidhd-arm`: A task-management arm that owns a local SQLite task store and exposes add/list/edit/done/search/stats/export/import plus AI-assisted parsing and suggestions through `octx x aidhd`.
+- `aidhd-arm`: A task-management arm that owns a local SQLite task store and exposes add/list/edit/done/search/stats/export plus AI-assisted parsing and suggestions through `octx x aidhd`.
 
 ### Modified Capabilities
 None. Existing specs (`arm-skills`, `credential-access`, etc.) constrain the new arm but their requirements do not change.
