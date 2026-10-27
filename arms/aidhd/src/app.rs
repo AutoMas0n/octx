@@ -2,7 +2,7 @@ use std::io::Read;
 use std::path::PathBuf;
 
 use anyhow::{Context, bail};
-use chrono::{Duration, Local, NaiveDate, Timelike};
+use chrono::{Datelike, Duration, Local, NaiveDate, Timelike};
 use rusqlite::Connection;
 
 use crate::cli::{Cli, Commands, DecisionsCommand};
@@ -52,7 +52,7 @@ fn dispatch(
                 parsed.category = Some(value);
             }
             if let Some(value) = due {
-                parsed.due_date = Some(value);
+                parsed.due_date = Some(parse_due_date(&value)?);
             }
             if let Some(value) = parse_recurrence(repeat)? {
                 parsed.recurrence_pattern = Some(value);
@@ -189,7 +189,10 @@ fn dispatch(
                     title,
                     priority: parse_priority(priority)?,
                     category: category.map(Some),
-                    due_date: due.map(Some),
+                    due_date: due
+                        .as_deref()
+                        .map(|value| parse_due_date(value).map(Some))
+                        .transpose()?,
                     ..TaskUpdate::default()
                 },
             )?;
@@ -293,6 +296,45 @@ fn dispatch(
             );
             Ok(())
         }
+        Commands::Today { json } => {
+            let today = Local::now().date_naive();
+            let tasks = db::list_tasks(
+                conn,
+                &TaskFilter {
+                    status: Some(Status::Pending),
+                    ..TaskFilter::default()
+                },
+            )?;
+            let counts = db::open_child_counts(conn)?;
+            let groups = partition_by_due(today, &tasks);
+            if json {
+                let mut value = serde_json::Map::new();
+                for (label, items) in &groups {
+                    if items.is_empty() {
+                        continue;
+                    }
+                    value.insert(label.to_string(), serde_json::to_value(items)?);
+                }
+                println!("{}", serde_json::to_string_pretty(&value)?);
+            } else if tasks.is_empty() {
+                println!("No open tasks. Add one with `aidhd add \"<title>\"`.");
+            } else {
+                for (label, items) in &groups {
+                    if items.is_empty() {
+                        continue;
+                    }
+                    println!("{label}:");
+                    for task in items {
+                        println!(
+                            "  {}",
+                            format_task(task, counts.get(&task.id).copied().unwrap_or(0))
+                        );
+                    }
+                }
+            }
+            Ok(())
+        }
+        Commands::Show { id } => show_task(conn, &id),
         Commands::Next => {
             match db::next_task(conn, Local::now().date_naive())? {
                 Some(task) => println!("{}", action_prompt(&task)),
@@ -354,6 +396,79 @@ fn dispatch(
             Ok(())
         }
     }
+}
+
+/// Partition open tasks into the three daily groups, in print order.
+fn partition_by_due(today: NaiveDate, tasks: &[Task]) -> [(&'static str, Vec<&Task>); 3] {
+    let mut groups: [(&'static str, Vec<&Task>); 3] = [
+        ("Overdue", Vec::new()),
+        ("Today", Vec::new()),
+        ("Upcoming", Vec::new()),
+    ];
+    for task in tasks {
+        let index = match task.due_date {
+            Some(due) if due < today => 0,
+            Some(due) if due == today => 1,
+            _ => 2,
+        };
+        groups[index].1.push(task);
+    }
+    groups
+}
+
+fn show_task(conn: &Connection, id: &str) -> anyhow::Result<()> {
+    let task = db::find_task_by_prefix(conn, id).map_err(|_| {
+        anyhow::anyhow!("no task matches '{id}'; run `aidhd today` to see open work")
+    })?;
+    println!("id: {}", short_id(&task.id));
+    println!("title: {}", task.title);
+    println!("status: {}", task.status.as_str());
+    println!("priority: {}", task.priority.as_str());
+    println!(
+        "due: {}",
+        task.due_date
+            .map(|day| day.format("%Y-%m-%d").to_string())
+            .unwrap_or_else(|| "none".into())
+    );
+    println!("category: {}", task.category.as_deref().unwrap_or("none"));
+    println!(
+        "tags: {}",
+        if task.tags.is_empty() {
+            "none".to_string()
+        } else {
+            task.tags.join(", ")
+        }
+    );
+    println!(
+        "description: {}",
+        task.description.as_deref().unwrap_or("none")
+    );
+    println!("notes: {}", task.notes.as_deref().unwrap_or("none"));
+    let subtasks = db::list_tasks(
+        conn,
+        &TaskFilter {
+            parent_task_id: Some(task.id.clone()),
+            ..TaskFilter::default()
+        },
+    )?;
+    if subtasks.is_empty() {
+        println!("subtasks: none");
+    } else {
+        println!("subtasks:");
+        for sub in subtasks {
+            println!("  {}  {}", short_id(&sub.id), sub.title);
+        }
+    }
+    let decisions = db::list_decisions(conn, Some(&task.id), None, Some(5))?;
+    if decisions.is_empty() {
+        println!("decisions: none");
+    } else {
+        println!("decisions:");
+        for decision in decisions {
+            println!("  {}", format_decision(&decision));
+        }
+    }
+    Ok(())
 }
 
 fn read_title(title: String) -> anyhow::Result<String> {
@@ -662,6 +777,68 @@ fn action_prompt(task: &Task) -> String {
         None => "Next",
     };
     format!("{prefix}: {}. Do it now?", task.title)
+}
+
+/// Parse a due date given as ISO (`2026-03-04`) or a natural phrase.
+///
+/// Accepted phrases, matched case-insensitively: `today`, `tomorrow`,
+/// `yesterday`, a weekday name (`monday`..`sunday`), `next week`, and
+/// `in N days` / `in N weeks`. A weekday resolves to its next occurrence,
+/// counting today. Anything else is an error so a typo never silently
+/// schedules a task on an arbitrary day.
+pub fn parse_due_date(value: &str) -> anyhow::Result<NaiveDate> {
+    let text = value.trim();
+    if text.is_empty() {
+        bail!("due date is empty");
+    }
+    let today = Local::now().date_naive();
+    let lower = text.to_lowercase();
+    match lower.as_str() {
+        "today" => return Ok(today),
+        "tomorrow" => return Ok(today + Duration::days(1)),
+        "yesterday" => return Ok(today - Duration::days(1)),
+        "next week" => return Ok(today + Duration::days(7)),
+        _ => {}
+    }
+    if let Some(day) = weekday_from_name(&lower) {
+        let today_weekday = today.weekday();
+        let ahead = (day.num_days_from_monday() as i64
+            - today_weekday.num_days_from_monday() as i64)
+            .rem_euclid(7);
+        return Ok(today + Duration::days(ahead));
+    }
+    if let Some(rest) = lower.strip_prefix("in ") {
+        let mut parts = rest.split_whitespace();
+        if let (Some(number), Some(unit)) = (parts.next(), parts.next())
+            && parts.next().is_none()
+            && let Ok(count) = number.parse::<i64>()
+        {
+            let days = match unit.trim_end_matches('s') {
+                "day" => count,
+                "week" => count * 7,
+                _ => 0,
+            };
+            if days > 0 {
+                return Ok(today + Duration::days(days));
+            }
+        }
+    }
+    NaiveDate::parse_from_str(text, "%Y-%m-%d")
+        .map_err(|_| anyhow::anyhow!("unrecognized due date: {value}"))
+}
+
+fn weekday_from_name(name: &str) -> Option<chrono::Weekday> {
+    use chrono::Weekday;
+    match name {
+        "monday" | "mon" => Some(Weekday::Mon),
+        "tuesday" | "tue" | "tues" => Some(Weekday::Tue),
+        "wednesday" | "wed" => Some(Weekday::Wed),
+        "thursday" | "thu" | "thur" | "thurs" => Some(Weekday::Thu),
+        "friday" | "fri" => Some(Weekday::Fri),
+        "saturday" | "sat" => Some(Weekday::Sat),
+        "sunday" | "sun" => Some(Weekday::Sun),
+        _ => None,
+    }
 }
 
 /// Parse a due window such as `1d`, `12h`, or `1w` into an inclusive end date.
@@ -1274,5 +1451,67 @@ mod tests {
         notify_due(&conn, &sink, due, true).unwrap();
         assert_eq!(sink.notified.borrow().len(), 2);
         assert!(db::get_task(&conn, &task.id).unwrap().notified_at.is_some());
+    }
+
+    #[test]
+    fn due_date_parses_iso_and_relative_phrases() {
+        let today = Local::now().date_naive();
+        assert_eq!(
+            parse_due_date("2026-03-04").unwrap(),
+            NaiveDate::from_ymd_opt(2026, 3, 4).unwrap()
+        );
+        assert_eq!(parse_due_date("today").unwrap(), today);
+        assert_eq!(
+            parse_due_date("Tomorrow").unwrap(),
+            today + Duration::days(1)
+        );
+        assert_eq!(
+            parse_due_date("yesterday").unwrap(),
+            today - Duration::days(1)
+        );
+        assert_eq!(
+            parse_due_date("next week").unwrap(),
+            today + Duration::days(7)
+        );
+        assert_eq!(
+            parse_due_date("in 3 days").unwrap(),
+            today + Duration::days(3)
+        );
+        assert_eq!(
+            parse_due_date("in 2 weeks").unwrap(),
+            today + Duration::days(14)
+        );
+    }
+
+    #[test]
+    fn due_date_parses_weekday_names_to_next_occurrence() {
+        use chrono::Datelike;
+        let today = Local::now().date_naive();
+        for (index, name) in [
+            "monday",
+            "tuesday",
+            "wednesday",
+            "thursday",
+            "friday",
+            "saturday",
+            "sunday",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let day = parse_due_date(name).unwrap();
+            assert_eq!(day.weekday().num_days_from_monday() as usize, index);
+            let ahead = (day - today).num_days();
+            assert!(
+                (0..=6).contains(&ahead),
+                "{name} resolved {ahead} days ahead"
+            );
+        }
+    }
+
+    #[test]
+    fn due_date_rejects_unknown_phrases() {
+        assert!(parse_due_date("someday").is_err());
+        assert!(parse_due_date("  ").is_err());
     }
 }

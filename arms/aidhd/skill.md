@@ -10,12 +10,14 @@ A one-shot task store: add, list, edit, complete, search, and export tasks in a 
 
 ## Usage
 ```
-octx x aidhd add <title> [--priority <high|medium|low>] [--category <name>] [--due <YYYY-MM-DD>] [--repeat <daily|weekly|monthly>] [--parent <id>] [--json] [--unscheduled]
+octx x aidhd add <title> [--priority <high|medium|low>] [--category <name>] [--due <date>] [--repeat <daily|weekly|monthly>] [--parent <id>] [--json] [--unscheduled]
 octx x aidhd add - [same options]
 octx x aidhd list [--status <pending|completed|cancelled>] [--cancelled] [--category <name>] [--parent <id>] [--json]
-octx x aidhd edit <id> [--title <text>] [--priority <level>] [--category <name>] [--due <YYYY-MM-DD>]
+octx x aidhd edit <id> [--title <text>] [--priority <level>] [--category <name>] [--due <date>]
 octx x aidhd reopen <id>
-octx x aidhd done <id>
+octx x aidhd done [last|<id>|<title>]
+octx x aidhd today [--json]
+octx x aidhd show <id>
 octx x aidhd search <text>
 octx x aidhd stats
 octx x aidhd next
@@ -40,7 +42,7 @@ octx x aidhd serve [--port <port>]
 ### Capture and edit (`add`, `edit`)
 - `--priority <high|medium|low>` — task priority. Defaults to medium when omitted.
 - `--category <name>` — free-form category.
-- `--due <YYYY-MM-DD>` — due date in local calendar terms.
+- `--due <date>` — due date. Accepts `YYYY-MM-DD` or a natural phrase: `today`, `tomorrow`, `yesterday`, a weekday name such as `friday` (next occurrence, counting today), `next week`, or `in 3 days` / `in 2 weeks`. An unrecognized phrase fails without writing.
 - `--repeat <daily|weekly|monthly>` — make the task recurring. Completing it advances the due date by the pattern and creates the next open occurrence. `add` only.
 - `--parent <id>` — link the new task as a subtask of this task. `add` only. Completing the parent leaves subtasks open.
 - `--title <text>` — replacement title. `edit` only.
@@ -49,6 +51,12 @@ octx x aidhd serve [--port <port>]
 - `add -` — read the title from standard input.
 
 When `add` gets no date from flags or parsing, the arm schedules it deterministically: high starts today, medium tomorrow, low two days out, taking the first day under the daily cap within the horizon. The assignment and reason go to stderr; stdout stays the task id. Recurring tasks are never auto-scheduled — their next date comes from the pattern.
+
+### Daily view and detail (`today`, `show`)
+
+- `today` — print open tasks grouped under `Overdue`, `Today`, and `Upcoming`, omitting empty groups. Use it as the daily starting point.
+- `show <id>` — print one task's full detail: title, status, priority, due date, category, tags, description, notes, subtasks, and recent scheduling decisions. Accepts an id prefix.
+- `--json` — print machine-readable JSON instead of text. `today` only.
 
 ### Read and query (`list`, `search`, `stats`, `next`, `due`)
 - `--status <pending|completed|cancelled>` — filter by status. `list` only.
@@ -59,6 +67,13 @@ When `add` gets no date from flags or parsing, the arm schedules it deterministi
 - `--within <window>` — due window such as `1d`, `12h`, or `1w`. `due` only.
 - `--notify` — deliver due tasks through the platform notification sink. `due` only.
 - `--force` — bypass notification deduplication. `due` only.
+
+### Completion (`done`)
+
+- `done` — with no argument, complete the task most recently surfaced by `next` or `today`. `done last` is an explicit alias.
+- `done <id>` — complete a task by id or unique id prefix.
+- `done <title>` — when the argument matches no id prefix, treat it as a case-insensitive title substring and complete only a unique pending match. Ambiguous matches are listed and nothing is completed.
+- After completing, the output reports how many tasks were completed today.
 
 ### Secretary and decisions (`pin`, `unpin`, `secretary`, `decisions`, `undo`)
 - `pin <id>` / `unpin <id>` — mark a task fixed so the secretary never reschedules it, or allow moves again. Never changes the due date or status.
@@ -93,6 +108,10 @@ When `add` gets no date from flags or parsing, the arm schedules it deterministi
 ## Examples
 ### Core commands
 - `octx x aidhd add "fix garage door" --priority high --category home --due 2026-11-01`
+- `octx x aidhd add "call the dentist" --due friday`
+- `octx x aidhd today`
+- `octx x aidhd done`
+- `octx x aidhd show 3f9a1c2e`
 - `printf 'buy thermal paste\n' | octx x aidhd add -`
 - `octx x aidhd list --status pending --category home`
 - `octx x aidhd search garage`

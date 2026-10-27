@@ -19,8 +19,9 @@ pub enum Commands {
         priority: Option<String>,
         #[arg(long)]
         category: Option<String>,
+        /// Accepts YYYY-MM-DD or a natural date such as `tomorrow` or `friday`.
         #[arg(long)]
-        due: Option<NaiveDate>,
+        due: Option<String>,
         #[arg(long, value_parser = ["daily", "weekly", "monthly"])]
         repeat: Option<String>,
         #[arg(long)]
@@ -57,8 +58,9 @@ pub enum Commands {
         priority: Option<String>,
         #[arg(long)]
         category: Option<String>,
+        /// Accepts YYYY-MM-DD or a natural date such as `tomorrow` or `friday`.
         #[arg(long)]
-        due: Option<NaiveDate>,
+        due: Option<String>,
     },
     /// Reopen a completed or cancelled task.
     Reopen { id: String },
@@ -97,6 +99,13 @@ pub enum Commands {
     Search { text: String },
     /// Show task counts.
     Stats,
+    /// Show what to do today, grouped into overdue, today, and upcoming.
+    Today {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show one task's full detail.
+    Show { id: String },
     /// Show the most urgent open task as an action prompt.
     Next,
     /// List tasks due within a window and optionally notify.

@@ -667,3 +667,159 @@ fn secretary_quiet_hours_suppress_the_prompt_but_keep_decisions() {
     let decisions = json_of(&run(&db, &["decisions", "--json"]));
     assert!(!decisions.as_array().unwrap().is_empty());
 }
+
+#[test]
+fn add_accepts_natural_language_due_dates() {
+    use chrono::{Datelike, Duration};
+    let dir = tempfile::tempdir().unwrap();
+    let db = temp_db(dir.path());
+    let today = Local::now().date_naive();
+
+    let add = run(&db, &["add", "task a", "--due", "tomorrow"]);
+    assert!(add.status.success(), "tomorrow should be accepted");
+    let tasks = json_of(&run(&db, &["list", "--json"]));
+    let task = tasks
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["title"] == "task a")
+        .unwrap();
+    assert_eq!(task["due_date"], (today + Duration::days(1)).to_string());
+
+    let add = run(&db, &["add", "task b", "--due", "in 3 days"]);
+    assert!(add.status.success(), "in 3 days should be accepted");
+    let tasks = json_of(&run(&db, &["list", "--json"]));
+    let task = tasks
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["title"] == "task b")
+        .unwrap();
+    assert_eq!(task["due_date"], (today + Duration::days(3)).to_string());
+
+    let add = run(&db, &["add", "task c", "--due", "friday"]);
+    assert!(add.status.success(), "friday should be accepted");
+    let tasks = json_of(&run(&db, &["list", "--json"]));
+    let task = tasks
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["title"] == "task c")
+        .unwrap();
+    let due: chrono::NaiveDate = task["due_date"].as_str().unwrap().parse().unwrap();
+    assert_eq!(due.weekday(), chrono::Weekday::Fri);
+    let ahead = (due - today).num_days();
+    assert!(
+        (0..=6).contains(&ahead),
+        "friday resolved {ahead} days ahead"
+    );
+}
+
+#[test]
+fn edit_accepts_natural_language_due_dates() {
+    use chrono::Duration;
+    let dir = tempfile::tempdir().unwrap();
+    let db = temp_db(dir.path());
+    let today = Local::now().date_naive();
+    let id = add_overdue(&db, "move me");
+    let edit = run(&db, &["edit", &id, "--due", "tomorrow"]);
+    assert!(
+        edit.status.success(),
+        "edit --due tomorrow should be accepted"
+    );
+    let tasks = json_of(&run(&db, &["list", "--json"]));
+    assert_eq!(
+        tasks[0]["due_date"],
+        (today + Duration::days(1)).to_string()
+    );
+}
+
+#[test]
+fn add_rejects_an_unrecognized_due_date_without_writing() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = temp_db(dir.path());
+    let add = run(&db, &["add", "bad date", "--due", "someday"]);
+    assert!(!add.status.success());
+    let tasks = json_of(&run(&db, &["list", "--json"]));
+    assert!(
+        tasks.as_array().unwrap().is_empty(),
+        "failed add must write nothing"
+    );
+}
+
+#[test]
+fn today_groups_by_due_date_and_excludes_completed() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = temp_db(dir.path());
+    let overdue = add_overdue(&db, "overdue item");
+    let _today_task = run(&db, &["add", "due now", "--due", "today"]);
+    let _later = run(&db, &["add", "later item", "--due", "in 3 days"]);
+    let _completed = run(&db, &["add", "done already", "--due", "today"]);
+    let completed_id = stdout(&_completed).trim().to_string();
+    assert!(run(&db, &["done", &completed_id]).status.success());
+
+    let output = run(&db, &["today"]);
+    assert!(output.status.success());
+    let text = stdout(&output);
+    let overdue_at = text.find("Overdue:").expect("overdue group printed");
+    let today_at = text.find("Today:").expect("today group printed");
+    let upcoming_at = text.find("Upcoming:").expect("upcoming group printed");
+    assert!(
+        overdue_at < today_at && today_at < upcoming_at,
+        "groups print in order"
+    );
+    assert!(text.contains("overdue item"));
+    assert!(text.contains("later item"));
+    assert!(
+        !text.contains("done already"),
+        "completed tasks are excluded"
+    );
+    assert!(!text.contains(&overdue[..8]) || text.contains("overdue item"));
+}
+
+#[test]
+fn today_on_an_empty_store_prints_a_prompt() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = temp_db(dir.path());
+    let output = run(&db, &["today"]);
+    assert!(output.status.success());
+    let text = stdout(&output);
+    assert!(text.contains("No open tasks"), "empty store prompt: {text}");
+    assert!(text.contains("aidhd add"), "prompt suggests add: {text}");
+}
+
+#[test]
+fn show_prints_detail_and_rejects_an_unknown_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = temp_db(dir.path());
+    let add = run(
+        &db,
+        &[
+            "add",
+            "detail task",
+            "--due",
+            "2026-03-04",
+            "--category",
+            "home",
+        ],
+    );
+    let id = stdout(&add).trim().to_string();
+    let show = run(&db, &["show", &id[..4]]);
+    assert!(show.status.success());
+    let text = stdout(&show);
+    for expected in [
+        "title: detail task",
+        "due: 2026-03-04",
+        "category: home",
+        "status: pending",
+    ] {
+        assert!(text.contains(expected), "missing {expected} in: {text}");
+    }
+    let missing = run(&db, &["show", "zzzz"]);
+    assert!(!missing.status.success());
+    let err = String::from_utf8_lossy(&missing.stderr).to_string();
+    assert!(
+        err.contains("aidhd today"),
+        "unknown id points at today: {err}"
+    );
+}

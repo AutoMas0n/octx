@@ -2,17 +2,17 @@
 
 ## 1. Natural-language due dates
 
-- [ ] 1.1 Change `--due` on `Add` and `Edit` in `arms/aidhd/src/cli.rs` from `NaiveDate` to `String` and verify `cargo check -p octx-aidhd` succeeds with dispatch still compiling.
-- [ ] 1.2 Add `parse_due_date(&str) -> anyhow::Result<NaiveDate>` in `arms/aidhd/src/app.rs` accepting ISO, `today`, `tomorrow`, `yesterday`, weekday names, `next week`, and `in N days`/`in N weeks`, case-insensitively, and wire it into `Add` and `Edit`; verify unit tests cover every accepted form and that `someday` fails without writing.
-- [ ] 1.3 Add integration tests in `arms/aidhd/tests/cli.rs` for `add --due tomorrow`, `add --due friday` at a fixed weekday, `add --due "in 3 days"`, and `edit --due tomorrow`; verify `cargo test -p octx-aidhd --test cli` passes.
-- [ ] 1.4 Document natural-language `--due` in `arms/aidhd/skill.md` with one example and verify `cargo test --test skill_conformance` still passes.
+- [x] 1.1 Change `--due` on `Add` and `Edit` in `arms/aidhd/src/cli.rs` from `NaiveDate` to `String` and verify `cargo check -p octx-aidhd` succeeds with dispatch still compiling.
+- [x] 1.2 Add `parse_due_date(&str) -> anyhow::Result<NaiveDate>` in `arms/aidhd/src/app.rs` accepting ISO, `today`, `tomorrow`, `yesterday`, weekday names, `next week`, and `in N days`/`in N weeks`, case-insensitively, and wire it into `Add` and `Edit`; verify unit tests cover every accepted form and that `someday` fails without writing.
+- [x] 1.3 Add integration tests in `arms/aidhd/tests/cli.rs` for `add --due tomorrow`, `add --due friday` at a fixed weekday, `add --due "in 3 days"`, and `edit --due tomorrow`; verify `cargo test -p octx-aidhd --test cli` passes.
+- [x] 1.4 Document natural-language `--due` in `arms/aidhd/skill.md` with one example and verify `cargo test --test skill_conformance` still passes.
 
 ## 2. Daily view and single-task detail
 
-- [ ] 2.1 Add `Today` and `Show { id }` variants in `arms/aidhd/src/cli.rs` and dispatch in `arms/aidhd/src/app.rs`; verify `cargo run -p octx-aidhd -- today --help` and `show --help` print usage.
-- [ ] 2.2 Implement `today` by partitioning pending tasks into Overdue/Today/Upcoming (omitting empty groups) with an empty-store prompt; verify unit and integration tests cover grouping, ordering, exclusion of completed tasks, and the empty case.
-- [ ] 2.3 Implement `show <id>` printing title, status, priority, due date, category, tags, description, notes, subtasks, and the task's recent decisions, reusing `db::find_task_by_prefix`; verify tests cover full detail, a unique prefix, and a non-zero exit with a `today` pointer for an unknown id.
-- [ ] 2.4 Document `today` and `show` in `arms/aidhd/skill.md` under Usage and Options with examples, and verify `cargo test --test skill_conformance` passes.
+- [x] 2.1 Add `Today` and `Show { id }` variants in `arms/aidhd/src/cli.rs` and dispatch in `arms/aidhd/src/app.rs`; verify `cargo run -p octx-aidhd -- today --help` and `show --help` print usage.
+- [x] 2.2 Implement `today` by partitioning pending tasks into Overdue/Today/Upcoming (omitting empty groups) with an empty-store prompt; verify unit and integration tests cover grouping, ordering, exclusion of completed tasks, and the empty case.
+- [x] 2.3 Implement `show <id>` printing title, status, priority, due date, category, tags, description, notes, subtasks, and the task's recent decisions, reusing `db::find_task_by_prefix`; verify tests cover full detail, a unique prefix, and a non-zero exit with a `today` pointer for an unknown id.
+- [x] 2.4 Document `today` and `show` in `arms/aidhd/skill.md` under Usage and Options with examples, and verify `cargo test --test skill_conformance` passes.
 
 ## 3. Frictionless completion, feedback, and guidance
 
