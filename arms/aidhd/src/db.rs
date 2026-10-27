@@ -1388,4 +1388,27 @@ mod tests {
             Err(DbError::NotFound(_))
         ));
     }
+
+    #[test]
+    fn skipped_decomposition_decision_is_recorded() {
+        let mut conn = open_in_memory().unwrap();
+        let task = add_task(&mut conn, &sample("unsplittable")).unwrap();
+        let run_id = start_run(&conn).unwrap();
+        add_decision(
+            &conn,
+            &NewDecision {
+                task_id: task.id.clone(),
+                kind: DecisionKind::Skipped,
+                old_due_date: task.due_date,
+                new_due_date: None,
+                reason: "title has no natural split".into(),
+                details: None,
+                run_id,
+            },
+        )
+        .unwrap();
+        let decisions = list_decisions(&conn, Some(&task.id), None, None).unwrap();
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].kind, DecisionKind::Skipped);
+    }
 }

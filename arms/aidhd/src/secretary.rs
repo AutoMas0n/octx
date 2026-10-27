@@ -226,6 +226,45 @@ fn is_stuck(
     overdue || never_dated || moved
 }
 
+/// A deterministic split used when no LLM is available.
+///
+/// Splits on commas and the word " and " into at most three non-empty,
+/// trimmed parts. Fewer than two parts means the title has no natural seam,
+/// and the caller records a `skipped` decision instead of forcing a split:
+/// inventing steps for a single task would be worse than leaving it alone.
+pub fn fallback_split(title: &str) -> Vec<String> {
+    let mut parts: Vec<String> = Vec::new();
+    for chunk in title.split(',') {
+        for piece in chunk.split(" and ") {
+            let part = piece.trim();
+            if !part.is_empty() {
+                parts.push(part.to_string());
+            }
+        }
+    }
+    if parts.len() < 2 {
+        return Vec::new();
+    }
+    parts.truncate(3);
+    parts
+}
+
+/// True when a recent `skipped` decomposition should suppress a retry.
+///
+/// Without this, one unsplittable title would write a skip row on every run
+/// forever. The backoff is measured from the skip's date, so a stale skip
+/// does not block a task whose title the user has since edited.
+pub fn skip_blocks_retry(last_skipped_at: Option<&str>, today: NaiveDate, days: i64) -> bool {
+    let Some(stamp) = last_skipped_at else {
+        return false;
+    };
+    let Some(head) = stamp.get(..10) else {
+        return false;
+    };
+    NaiveDate::parse_from_str(head, "%Y-%m-%d")
+        .is_ok_and(|skipped| (today - skipped).num_days() < days)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -787,5 +826,47 @@ mod tests {
         same_day_low.priority = crate::model::Priority::Low;
         let order = stuck(&[same_day_low, newer, older], &BTreeMap::new(), today);
         assert_eq!(order, vec!["older", "newer", "same-day-low"]);
+    }
+
+    // --- deterministic fallback (5a.4) ---
+
+    #[test]
+    fn fallback_splits_on_and() {
+        assert_eq!(
+            fallback_split("Clean kitchen and take out bins"),
+            vec!["Clean kitchen", "take out bins"]
+        );
+    }
+
+    #[test]
+    fn fallback_splits_on_commas() {
+        assert_eq!(
+            fallback_split("Draft email, book room, send invite"),
+            vec!["Draft email", "book room", "send invite"]
+        );
+    }
+
+    #[test]
+    fn fallback_truncates_to_three_parts() {
+        let parts = fallback_split("a, b, c, d, e");
+        assert_eq!(parts, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn fallback_refuses_a_title_with_no_seam() {
+        assert!(fallback_split("Write the annual report").is_empty());
+    }
+
+    #[test]
+    fn fallback_drops_empty_parts() {
+        assert_eq!(fallback_split("one, , and two"), vec!["one", "two"]);
+    }
+
+    #[test]
+    fn skip_backoff_blocks_only_recent_skips() {
+        let today = day(2026, 1, 10);
+        assert!(skip_blocks_retry(Some("2026-01-08T00:00:00Z"), today, 7));
+        assert!(!skip_blocks_retry(Some("2026-01-01T00:00:00Z"), today, 7));
+        assert!(!skip_blocks_retry(None, today, 7));
     }
 }
