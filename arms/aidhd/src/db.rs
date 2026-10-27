@@ -477,6 +477,7 @@ pub fn load_by_day(
     let mut stmt = conn.prepare(
         "SELECT due_date, COUNT(*) FROM tasks
          WHERE status = 'pending' AND due_date IS NOT NULL
+           AND decomposed_at IS NULL
            AND due_date >= ?1 AND due_date <= ?2
          GROUP BY due_date",
     )?;
@@ -535,7 +536,7 @@ pub fn find_task_by_prefix(conn: &Connection, prefix: &str) -> Result<Task> {
 pub fn next_task(conn: &Connection, today: NaiveDate) -> Result<Option<Task>> {
     let mut task = conn
         .query_row(
-            "SELECT * FROM tasks WHERE status = 'pending'
+            "SELECT * FROM tasks WHERE status = 'pending' AND decomposed_at IS NULL
              ORDER BY CASE WHEN due_date IS NOT NULL AND due_date <= ?1 THEN 0 ELSE 1 END,
                       CASE priority WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
                       CASE WHEN due_date IS NULL THEN 1 ELSE 0 END,
@@ -682,6 +683,167 @@ pub fn apply_reschedules(
     }
     tx.commit()?;
     Ok(items.len())
+}
+
+/// Break a parent task into scheduled subtasks in one transaction.
+///
+/// The parent is cleared and marked decomposed *before* day loads are read,
+/// so it no longer occupies a slot while its children are placed. Each child
+/// inherits the parent's category, tags and priority, is linked by
+/// `parent_task_id`, and is scheduled against the running day counts so the
+/// children do not silently overfill a day. A child that finds no open day
+/// within the horizon is skipped rather than pushed into the past.
+///
+/// Records one `decomposed` decision whose `details` JSON lists the child ids,
+/// which is what undo later cancels. Returns the decision and child ids.
+pub fn apply_decomposition(
+    conn: &mut Connection,
+    parent_id: &str,
+    steps: &[String],
+    run_id: &str,
+    today: NaiveDate,
+    cap: usize,
+    horizon_days: i64,
+) -> Result<(Decision, Vec<String>)> {
+    let parent = get_task(conn, parent_id)?;
+    if parent.status != Status::Pending {
+        return Err(DbError::Invalid(
+            "only pending tasks can be decomposed".into(),
+        ));
+    }
+    if parent.pinned {
+        return Err(DbError::Invalid("pinned tasks are never decomposed".into()));
+    }
+    if steps.is_empty() || steps.len() > crate::secretary::MAX_SUBTASKS {
+        return Err(DbError::Invalid("invalid subtask count".into()));
+    }
+    let old_due = parent.due_date;
+    let timestamp = now();
+
+    let tx = conn.transaction()?;
+    // Clear the parent first so `load_by_day` no longer counts it.
+    tx.execute(
+        "UPDATE tasks SET due_date = NULL, due_time = NULL, decomposed_at = ?2,
+             updated_at = ?2 WHERE id = ?1",
+        params![parent_id, timestamp],
+    )?;
+
+    let horizon_end = today + chrono::Duration::days(horizon_days);
+    let mut counts = load_by_day(&tx, today, horizon_end)?;
+    let mut child_ids: Vec<String> = Vec::new();
+    for step in steps {
+        let Some(day) = crate::secretary::next_open_day(today, today, &counts, cap, horizon_days)
+        else {
+            break;
+        };
+        let id = Uuid::new_v4().to_string();
+        tx.execute(
+            "INSERT INTO tasks (
+                id, title, description, notes, status, priority, category,
+                due_date, due_time, recurrence_pattern, parent_task_id,
+                notified_at, completed_at, last_completed_at, decomposed_at,
+                pinned, created_at, updated_at
+             ) VALUES (?1, ?2, NULL, NULL, 'pending', ?3, ?4, ?5, NULL, NULL,
+                       ?6, NULL, NULL, NULL, NULL, 0, ?7, ?7)",
+            params![
+                id,
+                step,
+                parent.priority.as_str(),
+                parent.category,
+                day.format("%Y-%m-%d").to_string(),
+                parent_id,
+                timestamp,
+            ],
+        )?;
+        for tag in &parent.tags {
+            tx.execute(
+                "INSERT OR IGNORE INTO task_tags (task_id, tag) VALUES (?1, ?2)",
+                params![id, tag],
+            )?;
+        }
+        *counts.entry(day).or_insert(0) += 1;
+        child_ids.push(id);
+    }
+
+    let decision_id = Uuid::new_v4().to_string();
+    let details = serde_json::json!({ "subtasks": child_ids }).to_string();
+    tx.execute(
+        "INSERT INTO decisions (
+            id, task_id, kind, old_due_date, new_due_date, reason, details,
+            created_at, undone_at, run_id
+         ) VALUES (?1, ?2, 'decomposed', ?3, NULL, ?4, ?5, ?6, NULL, ?7)",
+        params![
+            decision_id,
+            parent_id,
+            old_due.map(|d| d.format("%Y-%m-%d").to_string()),
+            "split into smaller steps",
+            details,
+            timestamp,
+            run_id,
+        ],
+    )?;
+    tx.commit()?;
+    let decision = get_decision(conn, &decision_id)?;
+    Ok((decision, child_ids))
+}
+
+/// Reverse a decomposition without deleting anything.
+///
+/// Only the children named in the decision's `details` are cancelled, so a
+/// step the user added by hand survives. The parent is reopened for
+/// scheduling, its original due date is restored, and `decomposed_at` is
+/// cleared so it can be broken down again. The decision is stamped undone
+/// rather than removed, preserving the audit trail.
+pub fn undo_decomposition(conn: &mut Connection, decision_id: &str) -> Result<()> {
+    let decision = get_decision(conn, decision_id)?;
+    if decision.kind != DecisionKind::Decomposed {
+        return Err(DbError::Invalid(
+            "only a decomposed decision can be undone this way".into(),
+        ));
+    }
+    if decision.undone_at.is_some() {
+        return Err(DbError::Invalid("decision already undone".into()));
+    }
+    let subtasks: Vec<String> = decision
+        .details
+        .as_deref()
+        .and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok())
+        .and_then(|value| {
+            value.get("subtasks")?.as_array().map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str().map(str::to_string))
+                    .collect()
+            })
+        })
+        .unwrap_or_default();
+
+    let timestamp = now();
+    let tx = conn.transaction()?;
+    for child in &subtasks {
+        tx.execute(
+            "UPDATE tasks SET status = 'cancelled', updated_at = ?2
+             WHERE id = ?1 AND parent_task_id = ?3",
+            params![child, timestamp, decision.task_id],
+        )?;
+    }
+    tx.execute(
+        "UPDATE tasks SET due_date = ?2, decomposed_at = NULL, updated_at = ?3
+         WHERE id = ?1",
+        params![
+            decision.task_id,
+            decision
+                .old_due_date
+                .map(|d| d.format("%Y-%m-%d").to_string()),
+            timestamp,
+        ],
+    )?;
+    tx.execute(
+        "UPDATE decisions SET undone_at = ?2 WHERE id = ?1",
+        params![decision_id, timestamp],
+    )?;
+    tx.commit()?;
+    Ok(())
 }
 
 /// Fetch one decision by id.
@@ -1410,5 +1572,162 @@ mod tests {
         let decisions = list_decisions(&conn, Some(&task.id), None, None).unwrap();
         assert_eq!(decisions.len(), 1);
         assert_eq!(decisions[0].kind, DecisionKind::Skipped);
+    }
+
+    #[test]
+    fn decomposition_creates_linked_children_and_a_decision() {
+        let mut conn = open_in_memory().unwrap();
+        let base = NaiveDate::from_ymd_opt(2026, 1, 5).unwrap();
+        let parent = add_task(
+            &mut conn,
+            &NewTask {
+                title: "big thing".into(),
+                due_date: Some(base),
+                priority: Some(Priority::High),
+                category: Some("home".into()),
+                tags: vec!["chore".into(), "weekend".into()],
+                ..NewTask::default()
+            },
+        )
+        .unwrap();
+        let run = start_run(&conn).unwrap();
+        let steps = vec!["step one".to_string(), "step two".to_string()];
+        let (decision, children) =
+            apply_decomposition(&mut conn, &parent.id, &steps, &run, base, 3, 14).unwrap();
+        assert_eq!(children.len(), 2);
+
+        let reloaded = get_task(&conn, &parent.id).unwrap();
+        assert_eq!(reloaded.status, Status::Pending);
+        assert!(reloaded.due_date.is_none());
+        assert!(reloaded.decomposed_at.is_some());
+
+        let kids = list_tasks(
+            &conn,
+            &TaskFilter {
+                parent_task_id: Some(parent.id.clone()),
+                ..TaskFilter::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(kids.len(), 2);
+        for kid in &kids {
+            let full = get_task(&conn, &kid.id).unwrap();
+            assert_eq!(full.priority, Priority::High);
+            assert_eq!(full.category.as_deref(), Some("home"));
+            assert_eq!(full.parent_task_id.as_deref(), Some(parent.id.as_str()));
+            assert!(full.due_date.is_some());
+            let mut tags = full.tags.clone();
+            tags.sort();
+            assert_eq!(tags, vec!["chore", "weekend"]);
+        }
+
+        assert_eq!(decision.kind, DecisionKind::Decomposed);
+        assert_eq!(decision.old_due_date, Some(base));
+        let details = decision.details.unwrap();
+        for id in &children {
+            assert!(details.contains(id));
+        }
+
+        // The parent stays open and visible in the pending list.
+        let pending = list_tasks(
+            &conn,
+            &TaskFilter {
+                status: Some(Status::Pending),
+                ..TaskFilter::default()
+            },
+        )
+        .unwrap();
+        assert!(pending.iter().any(|task| task.id == parent.id));
+    }
+
+    #[test]
+    fn undo_decomposition_cancels_only_listed_children() {
+        let mut conn = open_in_memory().unwrap();
+        let base = NaiveDate::from_ymd_opt(2026, 1, 5).unwrap();
+        let parent = add_task(
+            &mut conn,
+            &NewTask {
+                title: "big thing".into(),
+                due_date: Some(base),
+                ..NewTask::default()
+            },
+        )
+        .unwrap();
+        let run = start_run(&conn).unwrap();
+        let (decision, children) = apply_decomposition(
+            &mut conn,
+            &parent.id,
+            &["one".into(), "two".into()],
+            &run,
+            base,
+            3,
+            14,
+        )
+        .unwrap();
+
+        // A child the user added by hand is not part of the decision.
+        let manual = add_task(
+            &mut conn,
+            &NewTask {
+                title: "manual step".into(),
+                parent_task_id: Some(parent.id.clone()),
+                ..NewTask::default()
+            },
+        )
+        .unwrap();
+
+        undo_decomposition(&mut conn, &decision.id).unwrap();
+
+        // Listed children are cancelled, never deleted.
+        for id in &children {
+            assert_eq!(get_task(&conn, id).unwrap().status, Status::Cancelled);
+        }
+        assert_eq!(get_task(&conn, &manual.id).unwrap().status, Status::Pending);
+
+        let reloaded = get_task(&conn, &parent.id).unwrap();
+        assert_eq!(reloaded.status, Status::Pending);
+        assert!(reloaded.decomposed_at.is_none());
+        assert_eq!(reloaded.due_date, Some(base));
+        assert!(
+            get_decision(&conn, &decision.id)
+                .unwrap()
+                .undone_at
+                .is_some()
+        );
+
+        // The parent can be decomposed again after undo.
+        let (again, steps) =
+            apply_decomposition(&mut conn, &parent.id, &["again".into()], &run, base, 3, 14)
+                .unwrap();
+        assert_eq!(steps.len(), 1);
+        assert_eq!(again.kind, DecisionKind::Decomposed);
+    }
+
+    #[test]
+    fn decomposed_parent_is_excluded_from_cap_and_next() {
+        let mut conn = open_in_memory().unwrap();
+        let today = NaiveDate::from_ymd_opt(2026, 1, 5).unwrap();
+        let parent = add_task(
+            &mut conn,
+            &NewTask {
+                title: "parent".into(),
+                due_date: Some(today),
+                ..NewTask::default()
+            },
+        )
+        .unwrap();
+        update_task(
+            &conn,
+            &parent.id,
+            &TaskUpdate {
+                decomposed_at: Some(Some("2026-01-05T00:00:00Z".into())),
+                ..TaskUpdate::default()
+            },
+        )
+        .unwrap();
+
+        let loads = load_by_day(&conn, today, today).unwrap();
+        assert_eq!(loads.get(&today).copied().unwrap_or(0), 0);
+        assert!(next_task(&conn, today).unwrap().is_none());
     }
 }

@@ -129,6 +129,7 @@ pub fn reschedule_candidates(tasks: &[Task], today: NaiveDate) -> Vec<&Task> {
         .filter(|task| {
             task.status == Status::Pending
                 && !task.pinned
+                && task.decomposed_at.is_none()
                 && task.recurrence_pattern.is_none()
                 && task.due_date.is_some_and(|due| due < today)
         })
@@ -364,6 +365,24 @@ pub fn propose_decompositions<C: Completer>(
         }
     }
     Ok(accepted)
+}
+
+/// Select undated tasks the fill stage may schedule.
+///
+/// Pinned tasks are left alone because filling a date is a move. Recurring
+/// tasks derive their own next occurrence. Decomposed parents have already
+/// handed their scheduling to their children and must not be re-dated.
+pub fn undated_fill_candidates(tasks: &[Task]) -> Vec<&Task> {
+    tasks
+        .iter()
+        .filter(|task| {
+            task.status == Status::Pending
+                && !task.pinned
+                && task.decomposed_at.is_none()
+                && task.recurrence_pattern.is_none()
+                && task.due_date.is_none()
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1055,5 +1074,28 @@ mod tests {
         let fake = FakeCompleter::new("```json\n{\"a\":[\"one\"]}\n```");
         let result = propose_decompositions(&fake, &[&a]).unwrap();
         assert_eq!(result.get("a").unwrap(), &vec!["one"]);
+    }
+
+    // --- decomposed-parent exclusions (5a.7) ---
+
+    #[test]
+    fn decomposed_parent_is_not_rescheduled() {
+        let today = day(2026, 1, 10);
+        let mut t = candidate_task("p", Some(day(2026, 1, 1)), false, None, Status::Pending);
+        t.decomposed_at = Some("2026-01-02T00:00:00Z".into());
+        assert!(reschedule_candidates(&[t], today).is_empty());
+    }
+
+    #[test]
+    fn decomposed_parent_is_not_filled() {
+        let mut t = candidate_task("p", None, false, None, Status::Pending);
+        t.decomposed_at = Some("2026-01-02T00:00:00Z".into());
+        assert!(undated_fill_candidates(&[t]).is_empty());
+    }
+
+    #[test]
+    fn open_undated_task_is_filled() {
+        let t = candidate_task("u", None, false, None, Status::Pending);
+        assert_eq!(undated_fill_candidates(&[t]).len(), 1);
     }
 }
