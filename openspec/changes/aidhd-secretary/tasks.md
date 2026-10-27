@@ -11,8 +11,8 @@
 
 - [x] 2.1 Implement daily load counting and overload detection against a configurable daily cap; verify unit tests cover under-cap, at-cap, and over-cap days.
 - [x] 2.2 Implement same-time collision detection and deterministic tie-breaking by priority then creation time; verify a unit test separates two tasks with the same due timestamp.
-- [ ] 2.3 Implement bounded rescheduling to the next open day within the configured horizon; verify tests cover success, horizon exhaustion, and no move into the past.
-- [ ] 2.4 Exclude pinned and recurring tasks from overdue rescheduling; verify tests confirm each exclusion.
+- [x] 2.3 Implement bounded rescheduling to the next open day within the configured horizon; verify tests cover success, horizon exhaustion, and no move into the past.
+- [x] 2.4 Exclude pinned and recurring tasks from overdue rescheduling; verify tests confirm each exclusion.
 - [ ] 2.5 Implement a single-transaction pass that writes decisions and updates due dates atomically; verify a test rolls back on a mid-pass failure.
 - [ ] 2.6 Implement the fixed stage order (decompose, undated fill, overdue reschedule, overload/collision, optional tie-break) in one pass; verify a test with both a stuck task and an overloaded day ends with every day at or under the cap.
 - [ ] 2.7 Record a `skipped` decision when a collision contains only pinned tasks; verify a unit test moves none of them.

@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use chrono::NaiveDate;
+use chrono::{Duration, NaiveDate};
 
 use crate::model::{Status, Task};
 
@@ -88,9 +88,57 @@ pub fn tasks_to_move<'a>(tasks: &'a [Task], cap: usize) -> Vec<&'a Task> {
     moved
 }
 
+/// Find the next day at or after `from` that has room for one more task.
+///
+/// `counts` maps a date to its current pending load. A day is open when its
+/// count is below `cap`. The search never looks before `today`, so a task is
+/// never moved into the past, and never past `today + horizon_days`, so a run
+/// cannot push work indefinitely far out. Returns `None` when the horizon is
+/// exhausted, which the caller records as a `skipped` decision.
+pub fn next_open_day(
+    from: NaiveDate,
+    today: NaiveDate,
+    counts: &BTreeMap<NaiveDate, usize>,
+    cap: usize,
+    horizon_days: i64,
+) -> Option<NaiveDate> {
+    let start = from.max(today);
+    let limit = today + Duration::days(horizon_days);
+    let mut day = start;
+    while day <= limit {
+        let load = counts.get(&day).copied().unwrap_or(0);
+        if load < cap {
+            return Some(day);
+        }
+        day += Duration::days(1);
+    }
+    None
+}
+
+/// Select overdue tasks the pass may reschedule.
+///
+/// Excluded, each for a distinct reason:
+/// - pinned tasks are immovable by user intent;
+/// - recurring tasks advance by their own recurrence path and must not be
+///   treated as overdue one-offs;
+/// - non-pending tasks are already closed;
+/// - tasks without a due date are handled by undated fill instead.
+pub fn reschedule_candidates<'a>(tasks: &'a [Task], today: NaiveDate) -> Vec<&'a Task> {
+    tasks
+        .iter()
+        .filter(|task| {
+            task.status == Status::Pending
+                && !task.pinned
+                && task.recurrence_pattern.is_none()
+                && task.due_date.is_some_and(|due| due < today)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{Priority, Recurrence};
     use chrono::NaiveDate;
 
     fn day(y: i32, m: u32, d: u32) -> NaiveDate {
@@ -303,6 +351,150 @@ mod tests {
         let moved = tasks_to_move(&tasks, 1);
         assert_eq!(moved.len(), 1);
         assert_eq!(moved[0].id, "b");
+    }
+
+    fn counts(entries: &[(NaiveDate, usize)]) -> BTreeMap<NaiveDate, usize> {
+        entries.iter().copied().collect()
+    }
+
+    #[test]
+    fn next_open_day_skips_full_days() {
+        let today = day(2026, 1, 5);
+        let map = counts(&[(day(2026, 1, 5), 3), (day(2026, 1, 6), 3)]);
+        let next = next_open_day(today, today, &map, 3, 14);
+        assert_eq!(next, Some(day(2026, 1, 7)));
+    }
+
+    #[test]
+    fn next_open_day_respects_horizon_exhaustion() {
+        let today = day(2026, 1, 5);
+        // Every day through the horizon is full.
+        let mut map = BTreeMap::new();
+        for offset in 0..=3 {
+            map.insert(today + Duration::days(offset), 3);
+        }
+        let next = next_open_day(today, today, &map, 3, 3);
+        assert_eq!(next, None);
+    }
+
+    #[test]
+    fn next_open_day_never_moves_into_the_past() {
+        let today = day(2026, 1, 10);
+        // A stale day in the past is full; the search starts at today instead.
+        let map = counts(&[(day(2026, 1, 1), 3)]);
+        let next = next_open_day(day(2026, 1, 1), today, &map, 3, 14);
+        assert_eq!(next, Some(today));
+    }
+
+    #[test]
+    fn next_open_day_finds_capacity_after_gap() {
+        let today = day(2026, 1, 5);
+        let map = counts(&[(day(2026, 1, 5), 3)]);
+        // Day 6 has no entry, so it is open (zero load).
+        let next = next_open_day(today, today, &map, 3, 14);
+        assert_eq!(next, Some(day(2026, 1, 6)));
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn candidate_task(
+        id: &str,
+        due: Option<NaiveDate>,
+        pinned: bool,
+        recurrence: Option<Recurrence>,
+        status: Status,
+    ) -> Task {
+        Task {
+            id: id.into(),
+            title: id.into(),
+            description: None,
+            notes: None,
+            status,
+            priority: Priority::Medium,
+            category: None,
+            due_date: due,
+            recurrence_pattern: recurrence,
+            parent_task_id: None,
+            notified_at: None,
+            completed_at: None,
+            last_completed_at: None,
+            decomposed_at: None,
+            pinned,
+            created_at: "2026-01-01T00:00:00Z".into(),
+            updated_at: "2026-01-01T00:00:00Z".into(),
+            tags: vec![],
+        }
+    }
+
+    #[test]
+    fn overdue_pending_task_is_a_candidate() {
+        let today = day(2026, 1, 10);
+        let tasks = vec![candidate_task(
+            "t1",
+            Some(day(2026, 1, 9)),
+            false,
+            None,
+            Status::Pending,
+        )];
+        assert_eq!(reschedule_candidates(&tasks, today).len(), 1);
+    }
+
+    #[test]
+    fn pinned_task_is_not_a_candidate() {
+        let today = day(2026, 1, 10);
+        let tasks = vec![candidate_task(
+            "t1",
+            Some(day(2026, 1, 9)),
+            true,
+            None,
+            Status::Pending,
+        )];
+        assert!(reschedule_candidates(&tasks, today).is_empty());
+    }
+
+    #[test]
+    fn recurring_task_is_not_a_candidate() {
+        let today = day(2026, 1, 10);
+        let tasks = vec![candidate_task(
+            "t1",
+            Some(day(2026, 1, 9)),
+            false,
+            Some(Recurrence::Daily),
+            Status::Pending,
+        )];
+        assert!(reschedule_candidates(&tasks, today).is_empty());
+    }
+
+    #[test]
+    fn future_task_is_not_a_candidate() {
+        let today = day(2026, 1, 10);
+        let tasks = vec![candidate_task(
+            "t1",
+            Some(day(2026, 1, 11)),
+            false,
+            None,
+            Status::Pending,
+        )];
+        assert!(reschedule_candidates(&tasks, today).is_empty());
+    }
+
+    #[test]
+    fn completed_task_is_not_a_candidate() {
+        let today = day(2026, 1, 10);
+        let tasks = vec![candidate_task(
+            "t1",
+            Some(day(2026, 1, 9)),
+            false,
+            None,
+            Status::Completed,
+        )];
+        assert!(reschedule_candidates(&tasks, today).is_empty());
+    }
+
+    #[test]
+    fn undated_task_is_not_a_reschedule_candidate() {
+        let today = day(2026, 1, 10);
+        let tasks = vec![candidate_task("t1", None, false, None, Status::Pending)];
+        assert!(reschedule_candidates(&tasks, today).is_empty());
     }
 
     #[test]
