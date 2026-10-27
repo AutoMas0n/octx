@@ -265,6 +265,107 @@ pub fn skip_blocks_retry(last_skipped_at: Option<&str>, today: NaiveDate, days: 
         .is_ok_and(|skipped| (today - skipped).num_days() < days)
 }
 
+/// The seam between decomposition and whatever performs the completion.
+///
+/// Keeping this a trait lets the pass be tested with no network, and lets a
+/// missing credential surface as a plain error the caller turns into a
+/// deterministic fallback. Only `LlmClient` implements it in production.
+pub trait Completer {
+    fn complete(&self, system: &str, user: &str) -> std::result::Result<String, String>;
+}
+
+/// Most subtasks one parent may be broken into.
+pub const MAX_SUBTASKS: usize = 5;
+/// Longest subtask title the secretary will accept.
+pub const MAX_SUBTASK_CHARS: usize = 120;
+
+/// Build the one batched decomposition request for a whole run.
+///
+/// Every candidate goes into a single prompt, so a run with several stuck
+/// tasks still costs one request. The reply contract is an object mapping
+/// task id to an array of step titles.
+pub fn decomposition_prompt(candidates: &[&Task]) -> (String, String) {
+    let system = "You break big, neglected tasks into small concrete steps.         Reply with only a JSON object mapping each task id to an array of at         most 5 step titles. Each title must be non-empty, distinct, and at         most 120 characters. Steps must be directly actionable and must not         invent unrelated work. Do not add commentary."
+        .to_string();
+    let listing: Vec<serde_json::Value> = candidates
+        .iter()
+        .map(|task| {
+            serde_json::json!({
+                "task_id": task.id,
+                "title": task.title,
+                "category": task.category,
+            })
+        })
+        .collect();
+    let user = format!(
+        "Break these tasks into steps:\n{}",
+        serde_json::to_string_pretty(&listing).unwrap_or_default()
+    );
+    (system, user)
+}
+
+/// Strip a surrounding Markdown code fence, if the model added one.
+fn strip_code_fence(text: &str) -> &str {
+    let trimmed = text.trim();
+    let Some(rest) = trimmed.strip_prefix("```") else {
+        return trimmed;
+    };
+    let rest = rest.strip_prefix("json").unwrap_or(rest);
+    rest.trim_start().trim_end_matches("```").trim()
+}
+
+/// Validate one parent's proposed steps.
+///
+/// Returns `None` when the proposal is unusable: empty, more than
+/// [`MAX_SUBTASKS`], a blank title, a title over [`MAX_SUBTASK_CHARS`], or a
+/// duplicate. A rejected parent falls back on its own; it never fails the run.
+pub fn validate_subtasks(titles: &[String]) -> Option<Vec<String>> {
+    if titles.is_empty() || titles.len() > MAX_SUBTASKS {
+        return None;
+    }
+    let mut seen = BTreeSet::new();
+    let mut steps = Vec::with_capacity(titles.len());
+    for raw in titles {
+        let title = raw.trim();
+        if title.is_empty() || title.chars().count() > MAX_SUBTASK_CHARS {
+            return None;
+        }
+        if !seen.insert(title.to_lowercase()) {
+            return None;
+        }
+        steps.push(title.to_string());
+    }
+    Some(steps)
+}
+
+/// Ask the model to decompose every candidate in one request.
+///
+/// The reply is filtered down to ids that were actually asked about, and
+/// each parent's steps are validated independently. Invalid parents are
+/// simply absent from the result, so the caller can fall back per parent.
+pub fn propose_decompositions<C: Completer>(
+    completer: &C,
+    candidates: &[&Task],
+) -> std::result::Result<BTreeMap<String, Vec<String>>, String> {
+    if candidates.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let (system, user) = decomposition_prompt(candidates);
+    let text = completer.complete(&system, &user)?;
+    let raw: BTreeMap<String, Vec<String>> = serde_json::from_str(strip_code_fence(&text))
+        .map_err(|error| format!("invalid decomposition reply: {error}"))?;
+    let mut accepted = BTreeMap::new();
+    for (task_id, titles) in raw {
+        if !candidates.iter().any(|task| task.id == task_id) {
+            continue;
+        }
+        if let Some(steps) = validate_subtasks(&titles) {
+            accepted.insert(task_id, steps);
+        }
+    }
+    Ok(accepted)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -868,5 +969,91 @@ mod tests {
         assert!(skip_blocks_retry(Some("2026-01-08T00:00:00Z"), today, 7));
         assert!(!skip_blocks_retry(Some("2026-01-01T00:00:00Z"), today, 7));
         assert!(!skip_blocks_retry(None, today, 7));
+    }
+
+    // --- batched LLM decomposition (5a.3) ---
+
+    struct FakeCompleter {
+        reply: String,
+        calls: std::cell::Cell<usize>,
+    }
+
+    impl FakeCompleter {
+        fn new(reply: &str) -> Self {
+            Self {
+                reply: reply.to_string(),
+                calls: std::cell::Cell::new(0),
+            }
+        }
+    }
+
+    impl Completer for FakeCompleter {
+        fn complete(&self, _system: &str, _user: &str) -> std::result::Result<String, String> {
+            self.calls.set(self.calls.get() + 1);
+            Ok(self.reply.clone())
+        }
+    }
+
+    #[test]
+    fn several_candidates_make_one_request() {
+        let a = base_task("a");
+        let b = base_task("b");
+        let fake = FakeCompleter::new(r#"{"a":["one","two"],"b":["three"]}"#);
+        let result = propose_decompositions(&fake, &[&a, &b]).unwrap();
+        assert_eq!(fake.calls.get(), 1);
+        assert_eq!(result.get("a").unwrap(), &vec!["one", "two"]);
+        assert_eq!(result.get("b").unwrap(), &vec!["three"]);
+    }
+
+    #[test]
+    fn no_candidates_means_no_request() {
+        let fake = FakeCompleter::new("{}");
+        let result = propose_decompositions(&fake, &[]).unwrap();
+        assert!(result.is_empty());
+        assert_eq!(fake.calls.get(), 0);
+    }
+
+    #[test]
+    fn duplicate_titles_reject_that_parent_only() {
+        let a = base_task("a");
+        let b = base_task("b");
+        let fake = FakeCompleter::new(r#"{"a":["step","STEP"],"b":["ok"]}"#);
+        let result = propose_decompositions(&fake, &[&a, &b]).unwrap();
+        assert!(!result.contains_key("a"));
+        assert!(result.contains_key("b"));
+    }
+
+    #[test]
+    fn oversized_title_rejects_that_parent() {
+        let a = base_task("a");
+        let long = "x".repeat(121);
+        let fake = FakeCompleter::new(&format!(r#"{{"a":["ok","{long}"]}}"#));
+        let result = propose_decompositions(&fake, &[&a]).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn too_many_subtasks_rejects_that_parent() {
+        let a = base_task("a");
+        let fake = FakeCompleter::new(r#"{"a":["1","2","3","4","5","6"]}"#);
+        let result = propose_decompositions(&fake, &[&a]).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn unknown_ids_are_ignored() {
+        let a = base_task("a");
+        let fake = FakeCompleter::new(r#"{"ghost":["x"],"a":["real"]}"#);
+        let result = propose_decompositions(&fake, &[&a]).unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(result.contains_key("a"));
+    }
+
+    #[test]
+    fn markdown_fence_is_tolerated() {
+        let a = base_task("a");
+        let fake = FakeCompleter::new("```json\n{\"a\":[\"one\"]}\n```");
+        let result = propose_decompositions(&fake, &[&a]).unwrap();
+        assert_eq!(result.get("a").unwrap(), &vec!["one"]);
     }
 }

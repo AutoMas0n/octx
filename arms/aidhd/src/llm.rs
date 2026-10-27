@@ -122,6 +122,12 @@ impl LlmClient {
     }
 }
 
+impl crate::secretary::Completer for LlmClient {
+    fn complete(&self, system: &str, user: &str) -> std::result::Result<String, String> {
+        LlmClient::complete(self, system, user).map_err(|error| error.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
