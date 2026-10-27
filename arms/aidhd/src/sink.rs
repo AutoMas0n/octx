@@ -29,6 +29,9 @@ pub type Result<T> = std::result::Result<T, SinkError>;
 pub enum Cue {
     Start,
     Stop,
+    /// The transcript was not a task: a low double buzz, clearly unlike the
+    /// falling stop chime, so a rejected capture is audible.
+    Reject,
 }
 
 impl Cue {
@@ -37,6 +40,7 @@ impl Cue {
         match self {
             Cue::Start => [660.0, 880.0],
             Cue::Stop => [880.0, 660.0],
+            Cue::Reject => [220.0, 165.0],
         }
     }
 }
@@ -141,6 +145,7 @@ fn termux_cue(cue: Cue) -> Result<()> {
     let path = std::env::temp_dir().join(match cue {
         Cue::Start => "aidhd-cue-start.wav",
         Cue::Stop => "aidhd-cue-stop.wav",
+        Cue::Reject => "aidhd-cue-reject.wav",
     });
     std::fs::write(&path, cue_wav(cue))?;
     let _ = Command::new("termux-media-player")
@@ -327,6 +332,11 @@ mod tests {
         assert!(start_low < start_high, "start cue must rise");
         assert!(stop_high > stop_low, "stop cue must fall");
         assert_eq!((start_low, start_high), (stop_low, stop_high));
+        // The reject buzz is lower than either capture cue, so it is
+        // unmistakable even at low volume.
+        let [reject_a, reject_b] = Cue::Reject.tones();
+        assert!(reject_a < start_low && reject_a < stop_low);
+        assert!(reject_b < reject_a, "reject cue must fall");
     }
 
     #[test]

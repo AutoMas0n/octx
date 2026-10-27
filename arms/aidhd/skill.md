@@ -83,6 +83,7 @@ When `add` gets no date from flags or parsing, the arm schedules it deterministi
 
 ### Voice
 - `voice` — capture one utterance, transcribe it, parse the transcript with the same parser as text, save without a confirmation prompt, and speak a short confirmation. Plays a short rising two-tone chime before the mic opens ("speak now") and a falling one when capture ends. The microphone stays open for as long as you are speaking: the recognizer ends the utterance on silence, so there is no fixed recording window and no push-to-talk. A safety cap (30 s by default, `AIDHD_LISTEN_TIMEOUT`) only exists so a stuck recognizer cannot hang the command. No continuous listening and no wake word.
+  - When a credential is available, the transcript is first judged by the LLM: it may clean the text and reject pure noise (greetings, filler, background chatter) by playing a low double buzz and saving nothing. **Missing date, time, or priority is never a reason to reject** — the secretary schedules undated tasks afterwards. No credential, no `is_task` answer, a bad reply, or a failed request all fall back to the deterministic parser, so voice keeps working offline and never needs the model to save a task.
 
 ## Examples
 ### Core commands
@@ -194,6 +195,8 @@ AIDHD_AI_PROVIDER=openai AIDHD_AI_MODEL=gpt-4o-mini octx x aidhd ask "what shoul
 - **A concurrent writer holds the lock longer than `busy_timeout`** — exits non-zero with a database-busy message; retrying the command is safe.
 - **`voice` when the platform sink cannot capture audio** — exits `1` with a clear message; text commands remain usable.
 - **`voice` captures no speech** (silence, or the recognizer returns nothing) — exits `1` with `no speech detected; nothing saved`.
+- **`voice` hears something the judge calls noise** — plays the low reject buzz, exits `1` with `not a task; nothing saved`, and writes nothing.
+- **The voice judge is unreachable or replies with something unusable** — falls back to deterministic parsing and may note it on stderr; a plain phrase is still saved.
 - **`voice` hits the capture safety cap** (a stuck recognizer) — exits `1` with the timeout, kills the recognizer, and saves nothing.
 - **The voice transcript cannot be parsed into a task** — exits non-zero; nothing is saved and no confirmation is spoken.
 - **The capture cue cannot be played** (no `termux-media-player`, or playback fails) — silence only; the microphone still opens and the command behaves normally.

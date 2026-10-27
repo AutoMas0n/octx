@@ -69,6 +69,15 @@ impl LlmClient {
         &self.config
     }
 
+    /// Whether a credential is stored for the configured host. Callers use
+    /// this to skip a request that could only fail.
+    pub fn has_credential(&self) -> bool {
+        octx_creds::Store::open_default()
+            .ok()
+            .and_then(|store| store.get(&self.config.credential_host).ok())
+            .is_some()
+    }
+
     /// Send a two-message completion request and return the assistant content.
     pub fn complete(&self, system: &str, user: &str) -> Result<String> {
         let store = octx_creds::Store::open_default()?;

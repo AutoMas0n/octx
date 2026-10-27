@@ -327,7 +327,16 @@ fn dispatch(
             }
             Ok(())
         }
-        Commands::Voice => voice(conn, sink),
+        Commands::Voice => {
+            // The judge is optional: without a credential or with AI off,
+            // voice stays fully local and deterministic.
+            let judge = (ai_enabled() && llm.has_credential()).then_some(LlmCompleter(llm));
+            voice(
+                conn,
+                sink,
+                judge.as_ref().map(|j| j as &dyn secretary::Completer),
+            )
+        }
         Commands::Ask { question } => {
             let answer = match ask_with_ai(llm, conn, &question)? {
                 Some(answer) => answer,
@@ -790,7 +799,100 @@ fn remove_word_ci(input: &str, needle: &str) -> String {
     result.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn voice(conn: &mut Connection, sink: &dyn Sink) -> anyhow::Result<()> {
+/// What the voice judge decided about one transcript.
+#[derive(Debug)]
+enum Judgement {
+    Task(NewTask),
+    Noise,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+struct VoiceReply {
+    #[serde(default)]
+    is_task: Option<bool>,
+    title: Option<String>,
+    due_date: Option<String>,
+    priority: Option<String>,
+    category: Option<String>,
+    recurrence: Option<String>,
+    #[serde(default)]
+    tags: Vec<String>,
+}
+
+/// Decide whether a transcript is a task.
+///
+/// The model is a gate, not an authority: it may only choose "task" or
+/// "noise" and clean the text. Missing scheduling detail is never a reason to
+/// reject, because the secretary dates undated tasks afterwards. Any unusable
+/// reply falls back to the deterministic parser.
+fn judge_voice(transcript: &str, completer: Option<&dyn secretary::Completer>) -> Judgement {
+    let Some(completer) = completer else {
+        return deterministic_judgement(transcript);
+    };
+    let today = Local::now().date_naive();
+    let system = format!(
+        "Decide whether a speech-to-text transcript is a task the user wants \
+remembered. Today is {today}. Reject only greetings, filler, background \
+chatter, or fragments with no actionable or memorable content. Accept \
+anything the user plausibly wants remembered, even when no date, time, or \
+priority is mentioned: missing scheduling detail is never a reason to \
+reject. Never invent a due date; use null when none is implied. Strip \
+filler words and lead-ins like 'remind me to'. Reply with JSON only: \
+{{\"is_task\": true or false, \"title\": string, \"due_date\": \"YYYY-MM-DD\" or null, \
+\"priority\": \"high\" or \"medium\" or \"low\" or null}}."
+    );
+    match completer.complete(&system, transcript) {
+        Ok(raw) => parse_judgement(&raw).unwrap_or_else(|| deterministic_judgement(transcript)),
+        Err(error) => {
+            eprintln!("voice judgement unavailable: {error}; using deterministic parsing.");
+            deterministic_judgement(transcript)
+        }
+    }
+}
+
+fn parse_judgement(raw: &str) -> Option<Judgement> {
+    let json = extract_json(raw)?;
+    let reply: VoiceReply = serde_json::from_str(json).ok()?;
+    if reply.is_task == Some(false) {
+        return Some(Judgement::Noise);
+    }
+    let title = reply.title.unwrap_or_default().trim().to_string();
+    if title.is_empty() {
+        return Some(Judgement::Noise);
+    }
+    // A date the model invented or that has already passed is dropped, not a
+    // reason to reject: the secretary will schedule the task.
+    let today = Local::now().date_naive();
+    let due_date = reply
+        .due_date
+        .as_deref()
+        .and_then(|value| NaiveDate::parse_from_str(value, "%Y-%m-%d").ok())
+        .filter(|day| *day >= today);
+    Some(Judgement::Task(NewTask {
+        title,
+        due_date,
+        priority: reply.priority.as_deref().and_then(Priority::from_str),
+        category: reply.category,
+        recurrence_pattern: reply.recurrence.as_deref().and_then(Recurrence::from_str),
+        tags: reply.tags,
+        ..NewTask::default()
+    }))
+}
+
+fn deterministic_judgement(transcript: &str) -> Judgement {
+    let parsed = deterministic_parse(transcript);
+    if parsed.title.trim().is_empty() {
+        Judgement::Noise
+    } else {
+        Judgement::Task(parsed)
+    }
+}
+
+fn voice(
+    conn: &mut Connection,
+    sink: &dyn Sink,
+    judge: Option<&dyn secretary::Completer>,
+) -> anyhow::Result<()> {
     // A rising chime says "speak now"; the falling one says "capture ended".
     // Cues are best effort and must never block capture.
     let _ = sink.cue(Cue::Start);
@@ -804,10 +906,13 @@ fn voice(conn: &mut Connection, sink: &dyn Sink) -> anyhow::Result<()> {
         other => anyhow::anyhow!("voice unavailable: {other}"),
     })?;
     eprintln!("transcript: {transcript}");
-    let parsed = deterministic_parse(&transcript);
-    if parsed.title.is_empty() {
-        bail!("could not parse a task from the transcript");
-    }
+    let parsed = match judge_voice(&transcript, judge) {
+        Judgement::Task(parsed) => parsed,
+        Judgement::Noise => {
+            let _ = sink.cue(Cue::Reject);
+            bail!("not a task; nothing saved");
+        }
+    };
     let task = db::add_task(conn, &parsed)?;
     let confirmation = format!("Saved: {}", task.title);
     if let Err(error) = sink.speak(&confirmation) {
@@ -995,9 +1100,11 @@ mod tests {
         }
 
         fn cue(&self, cue: Cue) -> SinkResult<()> {
-            self.events
-                .borrow_mut()
-                .push(if cue == Cue::Start { "start" } else { "stop" });
+            self.events.borrow_mut().push(match cue {
+                Cue::Start => "start",
+                Cue::Stop => "stop",
+                Cue::Reject => "reject",
+            });
             Ok(())
         }
     }
@@ -1027,11 +1134,106 @@ mod tests {
         assert!(task.due_date.is_some());
     }
 
+    struct FakeCompleter(&'static str);
+
+    impl secretary::Completer for FakeCompleter {
+        fn complete(&self, _system: &str, _user: &str) -> std::result::Result<String, String> {
+            Ok(self.0.to_string())
+        }
+    }
+
+    #[test]
+    fn judgement_accepts_a_task_without_any_scheduling() {
+        let judgement = parse_judgement(
+            r#"{"is_task": true, "title": "buy milk", "due_date": null, "priority": null}"#,
+        )
+        .unwrap();
+        match judgement {
+            Judgement::Task(task) => {
+                assert_eq!(task.title, "buy milk");
+                assert_eq!(task.due_date, None);
+            }
+            Judgement::Noise => panic!("an undated task must be accepted"),
+        }
+    }
+
+    #[test]
+    fn judgement_drops_a_past_or_invented_date_but_keeps_the_task() {
+        let judgement =
+            parse_judgement(r#"{"is_task": true, "title": "buy milk", "due_date": "2001-01-01"}"#)
+                .unwrap();
+        match judgement {
+            Judgement::Task(task) => assert_eq!(task.due_date, None),
+            Judgement::Noise => panic!("a past date must not reject the task"),
+        }
+    }
+
+    #[test]
+    fn judgement_rejects_noise_and_empty_titles() {
+        assert!(matches!(
+            parse_judgement(r#"{"is_task": false, "title": ""}"#),
+            Some(Judgement::Noise)
+        ));
+        assert!(matches!(
+            parse_judgement(r#"{"is_task": true, "title": "   "}"#),
+            Some(Judgement::Noise)
+        ));
+        // An unusable reply returns None so the caller uses the deterministic path.
+        assert!(parse_judgement("not json").is_none());
+    }
+
+    #[test]
+    fn deterministic_judgement_rejects_only_empty_speech() {
+        assert!(matches!(deterministic_judgement(""), Judgement::Noise));
+        assert!(matches!(deterministic_judgement("  "), Judgement::Noise));
+        match deterministic_judgement("buy milk") {
+            Judgement::Task(task) => assert_eq!(task.title, "buy milk"),
+            Judgement::Noise => panic!("plain speech is a task"),
+        }
+    }
+
+    #[test]
+    fn voice_plays_a_reject_cue_and_saves_nothing_for_noise() {
+        let mut conn = db::open_in_memory().unwrap();
+        let sink = mock("um hello");
+        let judge = FakeCompleter(r#"{"is_task": false, "title": ""}"#);
+        let error = voice(&mut conn, &sink, Some(&judge)).unwrap_err();
+        assert!(error.to_string().contains("not a task"));
+        assert!(
+            db::list_tasks(&conn, &TaskFilter::default())
+                .unwrap()
+                .is_empty()
+        );
+        assert!(sink.spoken.borrow().is_empty());
+        assert_eq!(*sink.events.borrow(), ["start", "listen", "stop", "reject"]);
+    }
+
+    #[test]
+    fn voice_uses_the_judged_task_including_its_cleaned_title() {
+        let mut conn = db::open_in_memory().unwrap();
+        let sink = mock("uh buy milk thing");
+        let judge = FakeCompleter(r#"{"is_task": true, "title": "buy milk"}"#);
+        voice(&mut conn, &sink, Some(&judge)).unwrap();
+        let tasks = db::list_tasks(&conn, &TaskFilter::default()).unwrap();
+        assert_eq!(tasks[0].title, "buy milk");
+        assert_eq!(sink.events.borrow().len(), 3);
+    }
+
+    #[test]
+    fn voice_falls_back_when_the_model_reply_is_unusable() {
+        let mut conn = db::open_in_memory().unwrap();
+        let sink = mock("buy milk");
+        let judge = FakeCompleter("garbage");
+        voice(&mut conn, &sink, Some(&judge)).unwrap();
+        let tasks = db::list_tasks(&conn, &TaskFilter::default()).unwrap();
+        assert_eq!(tasks[0].title, "buy milk");
+    }
+
     #[test]
     fn voice_saves_without_prompt_and_speaks() {
         let mut conn = db::open_in_memory().unwrap();
         let sink = mock("add task buy milk");
-        voice(&mut conn, &sink).unwrap();
+        voice(&mut conn, &sink, None).unwrap();
         let tasks = db::list_tasks(&conn, &TaskFilter::default()).unwrap();
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].title, "buy milk");
