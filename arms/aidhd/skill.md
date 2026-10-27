@@ -82,7 +82,7 @@ When `add` gets no date from flags or parsing, the arm schedules it deterministi
 - `suggest <id>` — suggest priority, category, or tags for one task. Falls back to deterministic output when no LLM is available.
 
 ### Voice
-- `voice` — capture one utterance, transcribe it, parse the transcript with the same parser as text, save without a confirmation prompt, and speak a short confirmation. No continuous listening and no wake word.
+- `voice` — capture one utterance, transcribe it, parse the transcript with the same parser as text, save without a confirmation prompt, and speak a short confirmation. Plays a short rising two-tone chime before the mic opens ("speak now") and a falling one when capture ends. No continuous listening and no wake word.
 
 ## Examples
 ### Core commands
@@ -180,7 +180,7 @@ AIDHD_AI_PROVIDER=openai AIDHD_AI_MODEL=gpt-4o-mini octx x aidhd ask "what shoul
 ## Prerequisites
 - **`octx` installed and this arm on `PATH`**, so `octx x aidhd` resolves.
 - **A local writable data directory** for the arm-owned SQLite store. The arm creates the database and schema on first use; it does not import or migrate AIDHD's database.
-- **Termux:API package and commands** (`termux-notification`, `termux-tts-speak`, `termux-speech-to-text`) for voice and notifications on Android. Text commands do not need them.
+- **Termux:API package and commands** (`termux-notification`, `termux-tts-speak`, `termux-speech-to-text`) for voice and notifications on Android. Text commands do not need them. `termux-media-player` is optional and only used for the voice capture cues; without it voice is silent but otherwise unchanged.
 - **Linux voice prerequisites**, when using voice on a desktop: `notify-send`, `espeak`, and a recorder/transcriber command. Voice is optional on Linux; text remains the contract.
 - **An LLM credential at host `openrouter` or `openai`** for AI-assisted parsing, `ask`, and `suggest`. Without it those commands use deterministic fallbacks.
 - **An external scheduler** (cron or `termux-job-scheduler`) for recurring notification and secretary runs. See the Scheduling examples; the arm runs once per invocation and carries no timer.
@@ -194,6 +194,7 @@ AIDHD_AI_PROVIDER=openai AIDHD_AI_MODEL=gpt-4o-mini octx x aidhd ask "what shoul
 - **A concurrent writer holds the lock longer than `busy_timeout`** — exits non-zero with a database-busy message; retrying the command is safe.
 - **`voice` when the platform sink cannot capture audio** — exits `1` with a clear message; text commands remain usable.
 - **The voice transcript cannot be parsed into a task** — exits non-zero; nothing is saved and no confirmation is spoken.
+- **The capture cue cannot be played** (no `termux-media-player`, or playback fails) — silence only; the microphone still opens and the command behaves normally.
 - **The TTS confirmation fails after a successful save** — logs to stderr and exits `0`; the task is already stored.
 - **An AI request fails, times out, or has no credential** — falls back to deterministic parsing or output; `ask` and `suggest` may print a fallback notice to stderr. The command still exits `0` where the fallback produced a result.
 - **`ask` or `suggest` with no LLM and no deterministic result** — exits `1` with guidance and no partial output.

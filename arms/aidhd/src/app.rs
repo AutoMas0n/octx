@@ -12,7 +12,7 @@ use crate::export;
 use crate::llm::{LlmClient, LlmError};
 use crate::model::{NewTask, Priority, Recurrence, Status, Task, TaskFilter, TaskUpdate};
 use crate::secretary;
-use crate::sink::{PlatformSink, Sink};
+use crate::sink::{Cue, PlatformSink, Sink};
 
 pub fn run(cli: Cli) -> anyhow::Result<()> {
     let path = db::default_db_path()?;
@@ -791,9 +791,12 @@ fn remove_word_ci(input: &str, needle: &str) -> String {
 }
 
 fn voice(conn: &mut Connection, sink: &dyn Sink) -> anyhow::Result<()> {
-    let transcript = sink
-        .listen()
-        .map_err(|e| anyhow::anyhow!("voice unavailable: {e}"))?;
+    // A rising chime says "speak now"; the falling one says "capture ended".
+    // Cues are best effort and must never block capture.
+    let _ = sink.cue(Cue::Start);
+    let captured = sink.listen();
+    let _ = sink.cue(Cue::Stop);
+    let transcript = captured.map_err(|e| anyhow::anyhow!("voice unavailable: {e}"))?;
     eprintln!("transcript: {transcript}");
     let parsed = deterministic_parse(&transcript);
     if parsed.title.is_empty() {
@@ -959,12 +962,13 @@ pub fn database_path() -> anyhow::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sink::{Result as SinkResult, Sink};
+    use crate::sink::{Cue, Result as SinkResult, Sink};
     use std::cell::RefCell;
 
     struct MockSink {
         notified: RefCell<Vec<(String, String)>>,
         spoken: RefCell<Vec<String>>,
+        events: RefCell<Vec<&'static str>>,
         transcript: String,
     }
 
@@ -980,7 +984,15 @@ mod tests {
         }
 
         fn listen(&self) -> SinkResult<String> {
+            self.events.borrow_mut().push("listen");
             Ok(self.transcript.clone())
+        }
+
+        fn cue(&self, cue: Cue) -> SinkResult<()> {
+            self.events
+                .borrow_mut()
+                .push(if cue == Cue::Start { "start" } else { "stop" });
+            Ok(())
         }
     }
 
@@ -988,6 +1000,7 @@ mod tests {
         MockSink {
             notified: RefCell::new(Vec::new()),
             spoken: RefCell::new(Vec::new()),
+            events: RefCell::new(Vec::new()),
             transcript: transcript.into(),
         }
     }
@@ -1017,6 +1030,8 @@ mod tests {
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].title, "buy milk");
         assert_eq!(sink.spoken.borrow().len(), 1);
+        // The start cue precedes capture; the stop cue follows it.
+        assert_eq!(*sink.events.borrow(), ["start", "listen", "stop"]);
     }
 
     #[test]
