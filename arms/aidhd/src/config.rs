@@ -125,6 +125,99 @@ fn apply_env(config: &mut AiConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Tunables for the secretary pass. Every field has a default and an
+/// environment override, so the command works with no configuration at all.
+#[derive(Debug, Clone)]
+pub struct SecretaryConfig {
+    /// Maximum pending tasks allowed on one day.
+    pub daily_cap: usize,
+    /// How many days ahead rescheduling may search.
+    pub horizon_days: i64,
+    /// Quiet hours as (start, end) in 24h local time; the range may wrap midnight.
+    pub quiet_hours: (u8, u8),
+    /// A task overdue longer than this many days counts as stuck.
+    pub stuck_after_days: i64,
+    /// A task rescheduled this many times without completion counts as stuck.
+    pub stuck_after_moves: usize,
+    /// Maximum decompositions in a single pass.
+    pub max_decompositions: usize,
+    /// Expected cadence, used only by the health check.
+    pub cadence: String,
+    /// Whether tasks added without a due date get scheduled automatically.
+    pub auto_schedule: bool,
+}
+
+impl Default for SecretaryConfig {
+    fn default() -> Self {
+        Self {
+            daily_cap: 3,
+            horizon_days: 14,
+            quiet_hours: (22, 7),
+            stuck_after_days: 7,
+            stuck_after_moves: 3,
+            max_decompositions: 2,
+            cadence: "daily".into(),
+            auto_schedule: true,
+        }
+    }
+}
+
+/// Resolve secretary configuration from defaults, then environment overrides.
+pub fn resolve_secretary() -> anyhow::Result<SecretaryConfig> {
+    let mut config = SecretaryConfig::default();
+    if let Ok(value) = std::env::var("AIDHD_DAILY_CAP") {
+        config.daily_cap = value
+            .parse()
+            .with_context(|| format!("invalid AIDHD_DAILY_CAP: {value}"))?;
+    }
+    if let Ok(value) = std::env::var("AIDHD_HORIZON_DAYS") {
+        config.horizon_days = value
+            .parse()
+            .with_context(|| format!("invalid AIDHD_HORIZON_DAYS: {value}"))?;
+    }
+    if let Ok(value) = std::env::var("AIDHD_QUIET_HOURS") {
+        let (start, end) = value
+            .split_once('-')
+            .with_context(|| format!("AIDHD_QUIET_HOURS must be HH-HH, got {value}"))?;
+        let start: u8 = start
+            .parse()
+            .with_context(|| format!("invalid AIDHD_QUIET_HOURS start: {start}"))?;
+        let end: u8 = end
+            .parse()
+            .with_context(|| format!("invalid AIDHD_QUIET_HOURS end: {end}"))?;
+        if start > 23 || end > 23 {
+            bail!("AIDHD_QUIET_HOURS hours must be 0-23, got {start}-{end}");
+        }
+        config.quiet_hours = (start, end);
+    }
+    if let Ok(value) = std::env::var("AIDHD_STUCK_AFTER_DAYS") {
+        config.stuck_after_days = value
+            .parse()
+            .with_context(|| format!("invalid AIDHD_STUCK_AFTER_DAYS: {value}"))?;
+    }
+    if let Ok(value) = std::env::var("AIDHD_STUCK_AFTER_MOVES") {
+        config.stuck_after_moves = value
+            .parse()
+            .with_context(|| format!("invalid AIDHD_STUCK_AFTER_MOVES: {value}"))?;
+    }
+    if let Ok(value) = std::env::var("AIDHD_MAX_DECOMPOSITIONS") {
+        config.max_decompositions = value
+            .parse()
+            .with_context(|| format!("invalid AIDHD_MAX_DECOMPOSITIONS: {value}"))?;
+    }
+    if let Ok(value) = std::env::var("AIDHD_SECRETARY_CADENCE") {
+        config.cadence = value;
+    }
+    if let Ok(value) = std::env::var("AIDHD_AUTO_SCHEDULE") {
+        config.auto_schedule = match value.to_lowercase().as_str() {
+            "1" | "true" | "on" | "yes" => true,
+            "0" | "false" | "off" | "no" => false,
+            _ => bail!("invalid AIDHD_AUTO_SCHEDULE: {value}"),
+        };
+    }
+    Ok(config)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

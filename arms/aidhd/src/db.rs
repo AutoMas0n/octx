@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use chrono::{Local, NaiveDate, SecondsFormat, Utc};
@@ -446,6 +447,39 @@ pub fn due_tasks(conn: &Connection, end: NaiveDate) -> Result<Vec<Task>> {
     list_tasks(conn, &filter)
 }
 
+/// Count pending tasks per due date within `[start, end]`, inclusive.
+///
+/// Days with no pending tasks are absent from the map rather than zero, so
+/// callers decide how to treat an empty day. Pinned and recurring tasks are
+/// included here on purpose; the policy layer decides what to reschedule.
+pub fn load_by_day(
+    conn: &Connection,
+    start: NaiveDate,
+    end: NaiveDate,
+) -> Result<BTreeMap<NaiveDate, usize>> {
+    let mut stmt = conn.prepare(
+        "SELECT due_date, COUNT(*) FROM tasks
+         WHERE status = 'pending' AND due_date IS NOT NULL
+           AND due_date >= ?1 AND due_date <= ?2
+         GROUP BY due_date",
+    )?;
+    let rows = stmt.query_map(
+        params![
+            start.format("%Y-%m-%d").to_string(),
+            end.format("%Y-%m-%d").to_string()
+        ],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+    )?;
+    let mut counts = BTreeMap::new();
+    for row in rows {
+        let (date, count) = row?;
+        let date = NaiveDate::parse_from_str(&date, "%Y-%m-%d")
+            .map_err(|e| DbError::Invalid(format!("stored due_date {date}: {e}")))?;
+        counts.insert(date, count as usize);
+    }
+    Ok(counts)
+}
+
 /// Record that the given tasks were notified.
 pub fn mark_notified(conn: &Connection, ids: &[String]) -> Result<()> {
     let timestamp = now();
@@ -818,6 +852,53 @@ mod tests {
         assert_eq!(failed.decisions, 0);
         assert_eq!(failed.error.as_deref(), Some("credential missing"));
         assert!(failed.finished_at.is_some());
+    }
+
+    #[test]
+    fn load_by_day_counts_pending_only_and_skips_empty_days() {
+        let mut conn = open_in_memory().unwrap();
+        let base = NaiveDate::from_ymd_opt(2026, 1, 5).unwrap();
+        for i in 0..3 {
+            add_task(
+                &mut conn,
+                &NewTask {
+                    title: format!("same day {i}"),
+                    due_date: Some(base),
+                    ..NewTask::default()
+                },
+            )
+            .unwrap();
+        }
+        // A completed task on the same day must not count.
+        let done = add_task(
+            &mut conn,
+            &NewTask {
+                title: "already done".into(),
+                due_date: Some(base),
+                ..NewTask::default()
+            },
+        )
+        .unwrap();
+        complete_task(&mut conn, &done.id).unwrap();
+        // A task with no due date must not count.
+        add_task(&mut conn, &sample("no date")).unwrap();
+        // A task outside the range must not count.
+        add_task(
+            &mut conn,
+            &NewTask {
+                title: "too far".into(),
+                due_date: NaiveDate::from_ymd_opt(2026, 2, 1),
+                ..NewTask::default()
+            },
+        )
+        .unwrap();
+
+        let loads =
+            load_by_day(&conn, base, NaiveDate::from_ymd_opt(2026, 1, 31).unwrap()).unwrap();
+        assert_eq!(loads.get(&base), Some(&3));
+        // Days with no pending tasks are absent, not zero.
+        assert!(!loads.contains_key(&NaiveDate::from_ymd_opt(2026, 1, 6).unwrap()));
+        assert_eq!(loads.len(), 1);
     }
 
     #[test]

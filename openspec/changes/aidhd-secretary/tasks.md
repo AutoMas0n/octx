@@ -9,7 +9,7 @@
 
 ## 2. Policy engine
 
-- [ ] 2.1 Implement daily load counting and overload detection against a configurable daily cap; verify unit tests cover under-cap, at-cap, and over-cap days.
+- [x] 2.1 Implement daily load counting and overload detection against a configurable daily cap; verify unit tests cover under-cap, at-cap, and over-cap days.
 - [ ] 2.2 Implement same-time collision detection and deterministic tie-breaking by priority then creation time; verify a unit test separates two tasks with the same due timestamp.
 - [ ] 2.3 Implement bounded rescheduling to the next open day within the configured horizon; verify tests cover success, horizon exhaustion, and no move into the past.
 - [ ] 2.4 Exclude pinned and recurring tasks from overdue rescheduling; verify tests confirm each exclusion.
