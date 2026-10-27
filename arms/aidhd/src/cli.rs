@@ -27,6 +27,12 @@ pub enum Commands {
         parent: Option<String>,
         #[arg(long = "tag", action = clap::ArgAction::Append)]
         tags: Vec<String>,
+        /// Emit the task and scheduling fields as one JSON object.
+        #[arg(long)]
+        json: bool,
+        /// Leave the due date empty instead of auto-scheduling it.
+        #[arg(long)]
+        unscheduled: bool,
     },
     /// List tasks. Defaults to pending tasks.
     List {

@@ -357,3 +357,53 @@ fn cancelled_filter_lists_cancelled_child() {
     assert!(list.status.success());
     assert!(stdout(&list).contains("child step"));
 }
+
+#[test]
+fn add_auto_schedules_with_a_stderr_note() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = temp_db(dir.path());
+    let add = run(&db, &["add", "buy milk", "--priority", "high"]);
+    assert!(add.status.success());
+    assert_eq!(stdout(&add).trim().len(), 8);
+    let note = String::from_utf8_lossy(&add.stderr);
+    assert!(note.contains("scheduled for"), "stderr was: {note}");
+
+    let list = run(&db, &["list", "--json"]);
+    let tasks: serde_json::Value = serde_json::from_str(&stdout(&list)).unwrap();
+    assert!(!tasks[0]["due_date"].is_null());
+}
+
+#[test]
+fn add_json_emits_scheduling_fields_and_empty_stderr() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = temp_db(dir.path());
+    let add = run(&db, &["add", "buy milk", "--priority", "high", "--json"]);
+    assert!(add.status.success());
+    assert!(add.stderr.is_empty());
+    let value: serde_json::Value = serde_json::from_str(&stdout(&add)).unwrap();
+    assert!(value["scheduling_reason"].is_string());
+    assert!(value["scheduled_date"].is_string());
+}
+
+#[test]
+fn add_unscheduled_keeps_due_date_empty() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = temp_db(dir.path());
+    let add = run(&db, &["add", "someday thing", "--unscheduled", "--json"]);
+    assert!(add.status.success());
+    assert!(add.stderr.is_empty());
+    let value: serde_json::Value = serde_json::from_str(&stdout(&add)).unwrap();
+    assert!(value["due_date"].is_null());
+    assert!(value["scheduling_reason"].is_null());
+}
+
+#[test]
+fn recurring_undated_task_is_not_auto_scheduled() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = temp_db(dir.path());
+    let add = run(&db, &["add", "water plants", "--repeat", "daily", "--json"]);
+    assert!(add.status.success());
+    assert!(add.stderr.is_empty());
+    let value: serde_json::Value = serde_json::from_str(&stdout(&add)).unwrap();
+    assert!(value["due_date"].is_null());
+}

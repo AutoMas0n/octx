@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{Duration, NaiveDate, NaiveTime};
 
-use crate::model::{Status, Task};
+use crate::model::{Priority, Status, Task};
 
 /// A day whose pending-task count exceeds the configured cap.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -365,6 +365,66 @@ pub fn propose_decompositions<C: Completer>(
         }
     }
     Ok(accepted)
+}
+
+/// The day an undated task of this priority starts its search.
+///
+/// High work starts today, medium tomorrow, low two days out, so lower
+/// priorities yield the near days to more urgent work.
+pub fn priority_start(priority: Priority, today: NaiveDate) -> NaiveDate {
+    match priority {
+        Priority::High => today,
+        Priority::Medium => today + Duration::days(1),
+        Priority::Low => today + Duration::days(2),
+    }
+}
+
+/// Pick the first day at or after the priority start with spare capacity.
+///
+/// Returns `None` when the start is already past the horizon or every day up
+/// to it is full; the caller then leaves the task undated. The choice can
+/// never be in the past because [`next_open_day`] clamps to today.
+pub fn auto_schedule(
+    priority: Priority,
+    today: NaiveDate,
+    counts: &BTreeMap<NaiveDate, usize>,
+    cap: usize,
+    horizon_days: i64,
+) -> Option<NaiveDate> {
+    next_open_day(
+        priority_start(priority, today),
+        today,
+        counts,
+        cap,
+        horizon_days,
+    )
+}
+
+/// Human explanation for an auto-scheduling result, shown on stderr.
+pub fn schedule_reason(
+    priority: Priority,
+    today: NaiveDate,
+    result: Option<NaiveDate>,
+    horizon_days: i64,
+) -> String {
+    let start = priority_start(priority, today);
+    match result {
+        Some(day) if day == start => format!(
+            "scheduled for {}: {} priority starts on that day and it has capacity",
+            day.format("%Y-%m-%d"),
+            priority.as_str()
+        ),
+        Some(day) => format!(
+            "scheduled for {}: first open day at or after {} ({} priority)",
+            day.format("%Y-%m-%d"),
+            start.format("%Y-%m-%d"),
+            priority.as_str()
+        ),
+        None => format!(
+            "left undated: no open day within {horizon_days} days from {}",
+            start.format("%Y-%m-%d")
+        ),
+    }
 }
 
 /// Select undated tasks the fill stage may schedule.
@@ -1097,5 +1157,73 @@ mod tests {
     fn open_undated_task_is_filled() {
         let t = candidate_task("u", None, false, None, Status::Pending);
         assert_eq!(undated_fill_candidates(&[t]).len(), 1);
+    }
+
+    // --- deterministic auto-scheduler (5b.1) ---
+
+    #[test]
+    fn priority_sets_the_start_day() {
+        let today = day(2026, 1, 10);
+        assert_eq!(priority_start(Priority::High, today), day(2026, 1, 10));
+        assert_eq!(priority_start(Priority::Medium, today), day(2026, 1, 11));
+        assert_eq!(priority_start(Priority::Low, today), day(2026, 1, 12));
+    }
+
+    #[test]
+    fn high_priority_starts_today() {
+        let today = day(2026, 1, 10);
+        assert_eq!(
+            auto_schedule(Priority::High, today, &BTreeMap::new(), 3, 14),
+            Some(today)
+        );
+    }
+
+    #[test]
+    fn capacity_skips_to_the_next_day() {
+        let today = day(2026, 1, 10);
+        let mut counts = BTreeMap::new();
+        counts.insert(today, 3usize);
+        assert_eq!(
+            auto_schedule(Priority::High, today, &counts, 3, 14),
+            Some(day(2026, 1, 11))
+        );
+    }
+
+    #[test]
+    fn horizon_exhaustion_returns_none() {
+        let today = day(2026, 1, 10);
+        let mut counts = BTreeMap::new();
+        for offset in 0..=2 {
+            counts.insert(today + Duration::days(offset), 3usize);
+        }
+        assert_eq!(auto_schedule(Priority::High, today, &counts, 3, 2), None);
+    }
+
+    #[test]
+    fn low_priority_outside_the_horizon_stays_undated() {
+        let today = day(2026, 1, 10);
+        // Low starts today+2 but the horizon ends at today+1.
+        assert_eq!(
+            auto_schedule(Priority::Low, today, &BTreeMap::new(), 3, 1),
+            None
+        );
+    }
+
+    #[test]
+    fn schedule_never_lands_in_the_past() {
+        let today = day(2026, 1, 10);
+        assert_eq!(
+            auto_schedule(Priority::High, today, &BTreeMap::new(), 3, 14),
+            Some(today)
+        );
+    }
+
+    #[test]
+    fn schedule_reason_names_the_day_or_exhaustion() {
+        let today = day(2026, 1, 10);
+        let reason = schedule_reason(Priority::High, today, Some(today), 14);
+        assert!(reason.contains("2026-01-10"));
+        let reason = schedule_reason(Priority::High, today, None, 14);
+        assert!(reason.contains("left undated"));
     }
 }

@@ -11,6 +11,7 @@ use crate::db;
 use crate::export;
 use crate::llm::{LlmClient, LlmError};
 use crate::model::{NewTask, Priority, Recurrence, Status, Task, TaskFilter, TaskUpdate};
+use crate::secretary;
 use crate::sink::{PlatformSink, Sink};
 
 pub fn run(cli: Cli) -> anyhow::Result<()> {
@@ -36,6 +37,8 @@ fn dispatch(
             repeat,
             parent,
             tags,
+            json,
+            unscheduled,
         } => {
             let raw_title = read_title(title)?;
             let mut parsed = deterministic_parse(&raw_title);
@@ -63,8 +66,58 @@ fn dispatch(
             if parsed.title.trim().is_empty() {
                 parsed.title = raw_title;
             }
+
+            // Auto-schedule only when nothing supplied a date and the task is
+            // not recurring: a recurring task's next date comes from its
+            // pattern, never from an arbitrary slot.
+            let secretary = config::resolve_secretary()?;
+            let auto = secretary.auto_schedule
+                && !unscheduled
+                && parsed.recurrence_pattern.is_none()
+                && parsed.due_date.is_none();
+            let mut scheduling: Option<String> = None;
+            if auto {
+                let today = Local::now().date_naive();
+                let horizon_end = today + Duration::days(secretary.horizon_days);
+                let counts = db::load_by_day(conn, today, horizon_end)?;
+                let priority = parsed.priority.unwrap_or(Priority::Medium);
+                let choice = secretary::auto_schedule(
+                    priority,
+                    today,
+                    &counts,
+                    secretary.daily_cap,
+                    secretary.horizon_days,
+                );
+                if let Some(day) = choice {
+                    parsed.due_date = Some(day);
+                }
+                scheduling = Some(secretary::schedule_reason(
+                    priority,
+                    today,
+                    choice,
+                    secretary.horizon_days,
+                ));
+            }
+
             let task = db::add_task(conn, &parsed)?;
-            println!("{}", short_id(&task.id));
+            if json {
+                let mut value = serde_json::to_value(&task)?;
+                if let (Some(reason), Some(object)) = (&scheduling, value.as_object_mut()) {
+                    object.insert(
+                        "scheduled_date".into(),
+                        serde_json::json!(
+                            task.due_date.map(|day| day.format("%Y-%m-%d").to_string())
+                        ),
+                    );
+                    object.insert("scheduling_reason".into(), serde_json::json!(reason));
+                }
+                println!("{}", serde_json::to_string_pretty(&value)?);
+            } else {
+                println!("{}", short_id(&task.id));
+                if let Some(reason) = &scheduling {
+                    eprintln!("{reason}");
+                }
+            }
             Ok(())
         }
         Commands::List {

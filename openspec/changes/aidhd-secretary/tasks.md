@@ -53,11 +53,11 @@
 
 ## 5b. Intelligent auto-scheduling on add
 
-- [ ] 5b.1 Add a deterministic scheduler that picks the first day at or after the priority start with fewer than `daily_cap` open tasks, within the configured horizon; verify unit tests cover today/tomorrow/+2 starts, capacity skip, horizon exhaustion, and no past dates.
-- [ ] 5b.2 Wire auto-scheduling into `add` when no due date came from flags or parsing; print the assigned date and reason to stderr and keep stdout as the task id; verify an integration test captures both streams and that `--json` emits the scheduling fields without a stderr note.
-- [ ] 5b.3 Add `--unscheduled` and honor `AIDHD_AUTO_SCHEDULE=0`; verify a test confirms the due date stays empty and no note is printed.
+- [x] 5b.1 Add a deterministic scheduler that picks the first day at or after the priority start with fewer than `daily_cap` open tasks, within the configured horizon; verify unit tests cover today/tomorrow/+2 starts, capacity skip, horizon exhaustion, and no past dates.
+- [x] 5b.2 Wire auto-scheduling into `add` when no due date came from flags or parsing; print the assigned date and reason to stderr and keep stdout as the task id; verify an integration test captures both streams and that `--json` emits the scheduling fields without a stderr note.
+- [x] 5b.3 Add `--unscheduled` and honor `AIDHD_AUTO_SCHEDULE=0`; verify a test confirms the due date stays empty and no note is printed.
 - [ ] 5b.4 Make the secretary pass fill undated open tasks that slipped in from imports or older data and record a `scheduled` decision; verify an integration test covers the fill and the decision row.
-- [ ] 5b.5 Exclude recurring tasks from auto-scheduling and derive their next occurrence from the recurrence pattern; verify a test confirms a recurring undated task is not given an arbitrary date.
+- [x] 5b.5 Exclude recurring tasks from auto-scheduling and derive their next occurrence from the recurrence pattern; verify a test confirms a recurring undated task is not given an arbitrary date.
 - [ ] 5b.6 Read `AIDHD_DAILY_CAP`, `AIDHD_HORIZON_DAYS`, `AIDHD_QUIET_HOURS`, `AIDHD_STUCK_AFTER_DAYS`, `AIDHD_STUCK_AFTER_MOVES`, `AIDHD_MAX_DECOMPOSITIONS`, and `AIDHD_SECRETARY_CADENCE` through the config layer, with env overriding the file; verify a test sets each variable and observes the policy change.
 
 ## 6. Skill and scheduling
