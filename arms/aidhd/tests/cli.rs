@@ -407,3 +407,181 @@ fn recurring_undated_task_is_not_auto_scheduled() {
     let value: serde_json::Value = serde_json::from_str(&stdout(&add)).unwrap();
     assert!(value["due_date"].is_null());
 }
+
+fn json_of(output: &std::process::Output) -> serde_json::Value {
+    serde_json::from_str(&stdout(output)).expect("stdout is json")
+}
+
+fn add_overdue(db: &Path, title: &str) -> String {
+    let add = run(db, &["add", title, "--due", "2026-01-01"]);
+    assert!(add.status.success());
+    stdout(&add).trim().to_string()
+}
+
+#[test]
+fn pin_and_unpin_change_only_the_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = temp_db(dir.path());
+    let add = run(&db, &["add", "fixed thing", "--due", "2026-01-05"]);
+    let id = stdout(&add).trim().to_string();
+
+    let pin = run(&db, &["pin", &id]);
+    assert!(pin.status.success());
+    let tasks = json_of(&run(&db, &["list", "--json"]));
+    assert_eq!(tasks[0]["pinned"], true);
+    assert_eq!(tasks[0]["due_date"], "2026-01-05");
+    assert_eq!(tasks[0]["status"], "pending");
+
+    let unpin = run(&db, &["unpin", &id]);
+    assert!(unpin.status.success());
+    let tasks = json_of(&run(&db, &["list", "--json"]));
+    assert_eq!(tasks[0]["pinned"], false);
+    assert_eq!(tasks[0]["due_date"], "2026-01-05");
+}
+
+#[test]
+fn secretary_dry_run_writes_nothing_then_a_real_run_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = temp_db(dir.path());
+    add_overdue(&db, "overdue chore");
+
+    let dry = run(&db, &["secretary", "--dry-run"]);
+    assert!(dry.status.success());
+    assert!(stdout(&dry).contains("rescheduled="));
+    let decisions = run(&db, &["decisions"]);
+    assert!(stdout(&decisions).contains("No decisions."));
+
+    let real = run(&db, &["secretary"]);
+    assert!(real.status.success());
+    let decisions = run(&db, &["decisions", "--json"]);
+    let log = json_of(&decisions);
+    assert!(!log.as_array().unwrap().is_empty());
+}
+
+#[test]
+fn decisions_list_shows_old_new_reason_and_timestamp() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = temp_db(dir.path());
+    add_overdue(&db, "overdue chore");
+    assert!(run(&db, &["secretary"]).status.success());
+
+    let decisions = run(&db, &["decisions", "--json"]);
+    let log = json_of(&decisions);
+    let moved = log
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["kind"] == "rescheduled")
+        .expect("a rescheduled decision");
+    assert_eq!(moved["old_due_date"], "2026-01-01");
+    assert!(moved["new_due_date"].is_string());
+    assert!(moved["reason"].as_str().unwrap().contains("overdue"));
+    assert!(moved["created_at"].is_string());
+}
+
+#[test]
+fn undo_restores_the_previous_due_date() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = temp_db(dir.path());
+    add_overdue(&db, "overdue chore");
+    assert!(run(&db, &["secretary"]).status.success());
+
+    let log = json_of(&run(&db, &["decisions", "--json"]));
+    let decision = log
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["kind"] == "rescheduled")
+        .cloned()
+        .expect("a rescheduled decision");
+    let decision_id = decision["id"].as_str().unwrap();
+    let undo = run(&db, &["undo", decision_id]);
+    assert!(undo.status.success());
+    assert!(stdout(&undo).contains("2026-01-01"));
+
+    let tasks = json_of(&run(&db, &["list", "--json"]));
+    assert_eq!(tasks[0]["due_date"], "2026-01-01");
+    let log = json_of(&run(&db, &["decisions", "--json"]));
+    let undone = log
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == decision_id)
+        .unwrap();
+    assert!(undone["undone_at"].is_string());
+}
+
+#[test]
+fn undo_refuses_after_a_manual_edit() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = temp_db(dir.path());
+    let id = add_overdue(&db, "overdue chore");
+    assert!(run(&db, &["secretary"]).status.success());
+
+    let log = json_of(&run(&db, &["decisions", "--json"]));
+    let decision_id = log
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["kind"] == "rescheduled")
+        .and_then(|row| row["id"].as_str())
+        .unwrap()
+        .to_string();
+
+    assert!(
+        run(&db, &["edit", &id, "--due", "2030-06-01"])
+            .status
+            .success()
+    );
+    let undo = run(&db, &["undo", &decision_id]);
+    assert!(!undo.status.success());
+    let stderr = String::from_utf8_lossy(&undo.stderr);
+    assert!(stderr.contains("edited manually"), "stderr: {stderr}");
+}
+
+#[test]
+fn secretary_status_reports_health_and_flags_a_dead_scheduler() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = temp_db(dir.path());
+
+    let missing = run(&db, &["secretary", "--status"]);
+    assert!(!missing.status.success());
+
+    add_overdue(&db, "overdue chore");
+    assert!(run(&db, &["secretary"]).status.success());
+    let alive = run(&db, &["secretary", "--status"]);
+    assert!(alive.status.success());
+    assert!(stdout(&alive).contains("last run"));
+
+    let conn = octx_aidhd::db::open(&db).unwrap();
+    conn.execute(
+        "UPDATE secretary_runs SET started_at = '2020-01-01T00:00:00Z'",
+        [],
+    )
+    .unwrap();
+    let dead = run(&db, &["secretary", "--status"]);
+    assert!(!dead.status.success());
+    let stderr = String::from_utf8_lossy(&dead.stderr);
+    assert!(stderr.contains("scheduler may be dead"), "stderr: {stderr}");
+}
+
+#[test]
+fn decisions_prune_needs_an_explicit_request() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = temp_db(dir.path());
+    add_overdue(&db, "overdue chore");
+    assert!(run(&db, &["secretary"]).status.success());
+
+    assert!(run(&db, &["decisions"]).status.success());
+    let count = json_of(&run(&db, &["decisions", "--json"]))
+        .as_array()
+        .unwrap()
+        .len();
+    assert!(count > 0);
+
+    let prune = run(&db, &["decisions", "prune", "--before", "2030-01-01"]);
+    assert!(prune.status.success());
+    assert!(stdout(&prune).contains("deleted"));
+    let remaining = json_of(&run(&db, &["decisions", "--json"]));
+    assert_eq!(remaining.as_array().unwrap().len(), 0);
+}

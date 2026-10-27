@@ -64,6 +64,35 @@ pub enum Commands {
     Reopen { id: String },
     /// Mark a task complete.
     Done { id: String },
+    /// Mark a task fixed so the secretary never moves it.
+    Pin { id: String },
+    /// Let the secretary move a task again.
+    Unpin { id: String },
+    /// Run one secretary pass, preview it, or check scheduler health.
+    Secretary {
+        /// Print proposed decisions without writing anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Send one notification summarising the pass.
+        #[arg(long)]
+        notify: bool,
+        /// Report the last run and exit non-zero if it is overdue.
+        #[arg(long)]
+        status: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show the decision log, or prune it.
+    Decisions {
+        #[arg(long)]
+        limit: Option<usize>,
+        #[arg(long)]
+        json: bool,
+        #[command(subcommand)]
+        command: Option<DecisionsCommand>,
+    },
+    /// Reverse a decision, restoring the previous due date.
+    Undo { target: Option<String> },
     /// Search titles, descriptions, and notes.
     Search { text: String },
     /// Show task counts.
@@ -92,4 +121,13 @@ pub enum Commands {
     Ask { question: String },
     /// Suggest improvements for a task.
     Suggest { id: String },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum DecisionsCommand {
+    /// Delete old decisions; undone decisions are always kept.
+    Prune {
+        #[arg(long)]
+        before: Option<NaiveDate>,
+    },
 }

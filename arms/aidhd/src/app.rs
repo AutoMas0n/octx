@@ -5,7 +5,7 @@ use anyhow::{Context, bail};
 use chrono::{Duration, Local, NaiveDate};
 use rusqlite::Connection;
 
-use crate::cli::{Cli, Commands};
+use crate::cli::{Cli, Commands, DecisionsCommand};
 use crate::config;
 use crate::db;
 use crate::export;
@@ -218,6 +218,67 @@ fn dispatch(
             }
             Ok(())
         }
+        Commands::Pin { id } => pin_task(conn, &id, true),
+        Commands::Unpin { id } => pin_task(conn, &id, false),
+        Commands::Secretary {
+            dry_run,
+            notify,
+            status,
+            json,
+        } => {
+            if status {
+                secretary_status(conn, json)
+            } else {
+                secretary_pass(conn, dry_run, notify, json, sink)
+            }
+        }
+        Commands::Decisions {
+            limit,
+            json,
+            command,
+        } => match command {
+            Some(DecisionsCommand::Prune { before }) => {
+                let result = db::prune_decisions(conn, before)?;
+                println!(
+                    "deleted {} decisions; kept {} undone",
+                    result.deleted, result.retained_undone
+                );
+                Ok(())
+            }
+            None => {
+                let decisions = db::list_decisions(conn, None, None, limit)?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&decisions)?);
+                } else if decisions.is_empty() {
+                    println!("No decisions.");
+                } else {
+                    for decision in decisions {
+                        println!("{}", format_decision(&decision));
+                    }
+                }
+                Ok(())
+            }
+        },
+        Commands::Undo { target } => {
+            let id = match target.as_deref() {
+                None | Some("last") => db::list_decisions(conn, None, None, None)?
+                    .into_iter()
+                    .find(|decision| decision.undone_at.is_none())
+                    .map(|decision| decision.id)
+                    .ok_or_else(|| anyhow::anyhow!("no decision to undo"))?,
+                Some(id) => db::get_decision(conn, id)?.id,
+            };
+            let task = db::undo_decision(conn, &id)?;
+            println!(
+                "undid {}; {} now due {}",
+                short_id(&id),
+                short_id(&task.id),
+                task.due_date
+                    .map(|day| day.format("%Y-%m-%d").to_string())
+                    .unwrap_or_else(|| "none".into())
+            );
+            Ok(())
+        }
         Commands::Search { text } => {
             for task in db::search_tasks(conn, &text)? {
                 println!("{}", format_task(&task, 0));
@@ -317,6 +378,181 @@ fn resolve(conn: &Connection, id: &str) -> anyhow::Result<Task> {
 
 pub fn short_id(id: &str) -> String {
     id.chars().take(8).collect()
+}
+
+fn pin_task(conn: &Connection, id: &str, pinned: bool) -> anyhow::Result<()> {
+    let task = resolve(conn, id)?;
+    let updated = db::update_task(
+        conn,
+        &task.id,
+        &TaskUpdate {
+            pinned: Some(pinned),
+            ..TaskUpdate::default()
+        },
+    )?;
+    println!("{}", short_id(&updated.id));
+    Ok(())
+}
+
+fn format_decision(decision: &crate::model::Decision) -> String {
+    let old = decision
+        .old_due_date
+        .map(|day| day.format("%Y-%m-%d").to_string())
+        .unwrap_or_else(|| "none".into());
+    let new = decision
+        .new_due_date
+        .map(|day| day.format("%Y-%m-%d").to_string())
+        .unwrap_or_else(|| "none".into());
+    format!(
+        "{}  {}  {} -> {}  {}{}",
+        short_id(&decision.id),
+        short_id(&decision.task_id),
+        old,
+        new,
+        decision.reason,
+        if decision.undone_at.is_some() {
+            "  (undone)"
+        } else {
+            ""
+        }
+    )
+}
+
+fn cadence_seconds(cadence: &str) -> i64 {
+    let text = cadence.trim().to_lowercase();
+    match text.as_str() {
+        "daily" => 86_400,
+        "hourly" => 3_600,
+        "weekly" => 604_800,
+        other => {
+            let parse_unit = |suffix: char, factor: i64| {
+                other
+                    .strip_suffix(suffix)
+                    .and_then(|value| value.parse::<i64>().ok())
+                    .map(|value| value * factor)
+            };
+            parse_unit('h', 3_600)
+                .or_else(|| parse_unit('m', 60))
+                .or_else(|| parse_unit('d', 86_400))
+                .unwrap_or(86_400)
+        }
+    }
+}
+
+fn run_age_seconds(started_at: &str) -> Option<i64> {
+    let started = chrono::DateTime::parse_from_rfc3339(started_at).ok()?;
+    Some(
+        chrono::Utc::now()
+            .signed_duration_since(started.with_timezone(&chrono::Utc))
+            .num_seconds(),
+    )
+}
+
+fn secretary_status(conn: &Connection, json: bool) -> anyhow::Result<()> {
+    let config = config::resolve_secretary()?;
+    let Some(run) = db::latest_run(conn)? else {
+        bail!("no secretary run recorded yet");
+    };
+    let cadence = cadence_seconds(&config.cadence);
+    let age = run_age_seconds(&run.started_at);
+    let overdue = age.map(|age| age > 2 * cadence).unwrap_or(false);
+    if json {
+        let value = serde_json::json!({
+            "last_run": run.id,
+            "started_at": run.started_at,
+            "finished_at": run.finished_at,
+            "decisions": run.decisions,
+            "error": run.error,
+            "cadence": config.cadence,
+            "overdue": overdue,
+        });
+        println!("{}", serde_json::to_string_pretty(&value)?);
+    } else {
+        println!(
+            "last run {} started {} finished {} decisions {} error {}",
+            short_id(&run.id),
+            run.started_at,
+            run.finished_at.unwrap_or_else(|| "never".into()),
+            run.decisions,
+            run.error.unwrap_or_else(|| "none".into())
+        );
+        println!(
+            "cadence {}; age {}; overdue {}",
+            config.cadence,
+            age.map(|age| format!("{age}s"))
+                .unwrap_or_else(|| "unknown".into()),
+            overdue
+        );
+    }
+    if overdue {
+        bail!(
+            "scheduler may be dead: last run is older than twice the {} cadence",
+            config.cadence
+        );
+    }
+    Ok(())
+}
+
+fn secretary_pass(
+    conn: &mut Connection,
+    dry_run: bool,
+    notify: bool,
+    json: bool,
+    sink: &dyn Sink,
+) -> anyhow::Result<()> {
+    let config = config::resolve_secretary()?;
+    let today = Local::now().date_naive();
+    if dry_run {
+        let temp =
+            std::env::temp_dir().join(format!("aidhd-secretary-dry-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&temp);
+        conn.execute("VACUUM INTO ?1", [temp.to_string_lossy().to_string()])?;
+        let mut copy = db::open(&temp)?;
+        let summary = db::run_secretary_pass(&mut copy, &config, today, None)?;
+        let result = print_pass(&copy, &summary, json);
+        drop(copy);
+        let _ = std::fs::remove_file(&temp);
+        return result;
+    }
+
+    let summary = db::run_secretary_pass(conn, &config, today, None)?;
+    if notify && summary.total() > 0 {
+        sink.notify(
+            "aidhd secretary",
+            &format!(
+                "{} rescheduled, {} scheduled, {} decomposed, {} skipped. Use `aidhd undo` to reverse the last change.",
+                summary.rescheduled, summary.scheduled, summary.decomposed, summary.skipped
+            ),
+        )?;
+    }
+    print_pass(conn, &summary, json)
+}
+
+fn print_pass(conn: &Connection, summary: &db::PassSummary, json: bool) -> anyhow::Result<()> {
+    let run = db::latest_run(conn)?;
+    let decisions = match &run {
+        Some(run) => db::list_decisions(conn, None, Some(&run.id), None)?,
+        None => Vec::new(),
+    };
+    if json {
+        let value = serde_json::json!({
+            "decomposed": summary.decomposed,
+            "scheduled": summary.scheduled,
+            "rescheduled": summary.rescheduled,
+            "skipped": summary.skipped,
+            "decisions": decisions,
+        });
+        println!("{}", serde_json::to_string_pretty(&value)?);
+    } else {
+        println!(
+            "decomposed={} scheduled={} rescheduled={} skipped={}",
+            summary.decomposed, summary.scheduled, summary.rescheduled, summary.skipped
+        );
+        for decision in decisions {
+            println!("{}", format_decision(&decision));
+        }
+    }
+    Ok(())
 }
 
 fn format_task(task: &Task, step_count: usize) -> String {

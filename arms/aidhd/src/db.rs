@@ -1,14 +1,20 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use chrono::{Local, NaiveDate, NaiveTime, SecondsFormat, Utc};
+use chrono::{Duration, Local, NaiveDate, NaiveTime, SecondsFormat, Utc};
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::config::SecretaryConfig;
 use crate::model::{
     Decision, DecisionKind, NewDecision, NewTask, Priority, Recurrence, Reschedule, Run, Scheduled,
     Stats, Status, Task, TaskFilter, TaskUpdate,
+};
+use crate::secretary::{
+    Completer, collision_groups, next_open_day, overloaded_days, propose_decompositions,
+    reschedule_candidates, schedule_undated, skip_blocks_retry, stuck_candidates, tasks_to_move,
+    undated_fill_candidates,
 };
 
 #[derive(Debug, Error)]
@@ -1030,6 +1036,442 @@ pub fn latest_run(conn: &Connection) -> Result<Option<Run>> {
         .optional()?)
 }
 
+/// Counts of reschedules per task since its last completion (or ever).
+pub fn reschedule_counts(conn: &Connection) -> Result<BTreeMap<String, usize>> {
+    let mut stmt = conn.prepare(
+        "SELECT t.id, COUNT(d.id) FROM tasks t
+         LEFT JOIN decisions d
+           ON d.task_id = t.id
+          AND d.kind = 'rescheduled'
+          AND (t.last_completed_at IS NULL OR d.created_at > t.last_completed_at)
+         GROUP BY t.id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })?;
+    let mut counts = BTreeMap::new();
+    for row in rows {
+        let (task_id, count) = row?;
+        if count > 0 {
+            counts.insert(task_id, count as usize);
+        }
+    }
+    Ok(counts)
+}
+
+/// The most recent `skipped` decision time for a task, used for retry backoff.
+pub fn last_skipped_at(conn: &Connection, task_id: &str) -> Result<Option<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT created_at FROM decisions
+         WHERE task_id = ?1 AND kind = 'skipped' AND undone_at IS NULL
+         ORDER BY created_at DESC LIMIT 1",
+    )?;
+    Ok(stmt
+        .query_row(params![task_id], |row| row.get(0))
+        .optional()?)
+}
+
+/// Result of pruning the decision log.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct PruneResult {
+    pub deleted: usize,
+    pub retained_undone: usize,
+}
+
+/// Reverse one decision, restoring the task's previous due date.
+///
+/// Undo is refused when the task's current due date is not the one the
+/// decision wrote: a manual edit after the run wins over an automatic undo,
+/// and silently clobbering it would be worse than refusing. Decompositions
+/// restore the parent and cancel only their recorded children.
+pub fn undo_decision(conn: &mut Connection, decision_id: &str) -> Result<Task> {
+    let decision = get_decision(conn, decision_id)?;
+    if decision.undone_at.is_some() {
+        return Err(DbError::Invalid(format!(
+            "decision already undone: {decision_id}"
+        )));
+    }
+    let task = get_task(conn, &decision.task_id)?;
+    if task.due_date != decision.new_due_date {
+        return Err(DbError::Invalid(format!(
+            "cannot undo {}: {} was edited manually (due date is {}, decision expected {})",
+            decision_id,
+            task.title,
+            task.due_date
+                .map(|d| d.format("%Y-%m-%d").to_string())
+                .unwrap_or_else(|| "empty".into()),
+            decision
+                .new_due_date
+                .map(|d| d.format("%Y-%m-%d").to_string())
+                .unwrap_or_else(|| "empty".into()),
+        )));
+    }
+
+    if decision.kind == DecisionKind::Decomposed {
+        undo_decomposition(conn, decision_id)?;
+        return get_task(conn, &decision.task_id);
+    }
+
+    let timestamp = now();
+    let tx = conn.transaction()?;
+    tx.execute(
+        "UPDATE tasks SET due_date = ?2, updated_at = ?3 WHERE id = ?1",
+        params![
+            decision.task_id,
+            decision
+                .old_due_date
+                .map(|d| d.format("%Y-%m-%d").to_string()),
+            timestamp,
+        ],
+    )?;
+    tx.execute(
+        "UPDATE decisions SET undone_at = ?2 WHERE id = ?1",
+        params![decision_id, timestamp],
+    )?;
+    tx.commit()?;
+    get_task(conn, &decision.task_id)
+}
+
+/// Delete old decisions, keeping every row that an undo relies on.
+///
+/// Retention is indefinite unless the caller explicitly prunes. Only rows
+/// that were never undone may be deleted: an undone row is the anchor of an
+/// undo action and stays forever, so history cannot silently lose the fact
+/// that something was reversed. With `before`, only rows created before that
+/// date are candidates.
+pub fn prune_decisions(conn: &Connection, before: Option<NaiveDate>) -> Result<PruneResult> {
+    let deleted = match before {
+        Some(day) => conn.execute(
+            "DELETE FROM decisions WHERE undone_at IS NULL AND created_at < ?1",
+            params![format!("{day}T00:00:00Z")],
+        )?,
+        None => conn.execute("DELETE FROM decisions WHERE undone_at IS NULL", [])?,
+    };
+    let retained: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM decisions WHERE undone_at IS NOT NULL",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(PruneResult {
+        deleted,
+        retained_undone: retained as usize,
+    })
+}
+
+/// Counts of work done by one secretary pass.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct PassSummary {
+    pub decomposed: usize,
+    pub scheduled: usize,
+    pub rescheduled: usize,
+    pub skipped: usize,
+}
+
+impl PassSummary {
+    /// Total decisions written, for the run row.
+    pub fn total(&self) -> usize {
+        self.decomposed + self.scheduled + self.rescheduled + self.skipped
+    }
+}
+
+fn pending_tasks(conn: &Connection) -> Result<Vec<Task>> {
+    list_tasks(
+        conn,
+        &TaskFilter {
+            status: Some(Status::Pending),
+            ..TaskFilter::default()
+        },
+    )
+}
+
+fn record_skipped(conn: &Connection, task_id: &str, reason: &str, run_id: &str) -> Result<()> {
+    add_decision(
+        conn,
+        &NewDecision {
+            task_id: task_id.to_string(),
+            kind: DecisionKind::Skipped,
+            old_due_date: None,
+            new_due_date: None,
+            reason: reason.to_string(),
+            details: None,
+            run_id: run_id.to_string(),
+        },
+    )?;
+    Ok(())
+}
+
+/// Run one secretary pass in the fixed stage order.
+///
+/// Stages run earliest-to-deepest: decompose stuck tasks, fill undated tasks,
+/// reschedule overdue work, then resolve overloads and same-time collisions.
+/// Overload resolution runs last so the day counts it reads are the final
+/// ones. Every stage reloads tasks and counts from the database, and every
+/// write goes through the transactional appliers, so a failure leaves no
+/// half-applied batch. The optional completer is only used for decomposition
+/// proposals; without one the deterministic fallback split is used.
+pub fn run_secretary_pass(
+    conn: &mut Connection,
+    config: &SecretaryConfig,
+    today: NaiveDate,
+    completer: Option<&dyn Completer>,
+) -> Result<PassSummary> {
+    let run_id = start_run(conn)?;
+    let result = (|| -> Result<PassSummary> {
+        let mut summary = PassSummary::default();
+
+        // 1. Decompose stuck tasks.
+        let tasks = pending_tasks(conn)?;
+        let counts = reschedule_counts(conn)?;
+        let stuck = stuck_candidates(
+            &tasks,
+            &counts,
+            today,
+            config.stuck_after_days,
+            config.stuck_after_moves,
+        );
+        let mut candidates = Vec::new();
+        for task in stuck {
+            let skipped_at = last_skipped_at(conn, &task.id)?;
+            if skip_blocks_retry(skipped_at.as_deref(), today, 7) {
+                continue;
+            }
+            candidates.push(task);
+        }
+        if !candidates.is_empty() {
+            let proposed = match completer {
+                Some(completer) => {
+                    propose_decompositions(completer, &candidates).unwrap_or_default()
+                }
+                None => BTreeMap::new(),
+            };
+            let mut decomposed = 0;
+            for task in candidates {
+                if decomposed >= config.max_decompositions {
+                    break;
+                }
+                let steps = proposed
+                    .get(&task.id)
+                    .cloned()
+                    .unwrap_or_else(|| crate::secretary::fallback_split(&task.title));
+                if steps.len() < 2 {
+                    record_skipped(
+                        conn,
+                        &task.id,
+                        "could not split into smaller steps",
+                        &run_id,
+                    )?;
+                    summary.skipped += 1;
+                    continue;
+                }
+                apply_decomposition(
+                    conn,
+                    &task.id,
+                    &steps,
+                    &run_id,
+                    today,
+                    config.daily_cap,
+                    config.horizon_days,
+                )?;
+                decomposed += 1;
+                summary.decomposed += 1;
+            }
+        }
+
+        // 2. Fill undated tasks that arrived from imports or older data.
+        let tasks = pending_tasks(conn)?;
+        let mut day_counts = load_by_day(conn, today, today + Duration::days(config.horizon_days))?;
+        let undated = undated_fill_candidates(&tasks);
+        let scheduled = schedule_undated(
+            &undated,
+            today,
+            &mut day_counts,
+            config.daily_cap,
+            config.horizon_days,
+        );
+        if !scheduled.is_empty() {
+            summary.scheduled += apply_scheduled(conn, &scheduled, &run_id)?;
+        }
+
+        // 3. Reschedule overdue work to the next open day.
+        let tasks = pending_tasks(conn)?;
+        let mut day_counts = load_by_day(conn, today, today + Duration::days(config.horizon_days))?;
+        let mut moves: Vec<Reschedule> = Vec::new();
+        let mut skips: Vec<(String, String)> = Vec::new();
+        for task in reschedule_candidates(&tasks, today) {
+            let Some(from) = task.due_date else { continue };
+            match next_open_day(
+                from,
+                today,
+                &day_counts,
+                config.daily_cap,
+                config.horizon_days,
+            ) {
+                Some(to) => {
+                    *day_counts.entry(to).or_insert(0) += 1;
+                    moves.push(Reschedule {
+                        task_id: task.id.clone(),
+                        from,
+                        to,
+                        reason: format!(
+                            "overdue since {}; moved to the next open day",
+                            from.format("%Y-%m-%d")
+                        ),
+                    });
+                }
+                None => skips.push((
+                    task.id.clone(),
+                    format!(
+                        "left overdue: no open day within {} days",
+                        config.horizon_days
+                    ),
+                )),
+            }
+        }
+        if !moves.is_empty() {
+            summary.rescheduled += apply_reschedules(conn, &moves, &run_id)?;
+        }
+        for (task_id, reason) in &skips {
+            record_skipped(conn, task_id, reason, &run_id)?;
+            summary.skipped += 1;
+        }
+
+        // 4. Resolve overloaded days and same-time collisions.
+        let tasks = pending_tasks(conn)?;
+        let day_counts = load_by_day(conn, today, today + Duration::days(config.horizon_days))?;
+        let mut day_counts = day_counts;
+        let mut planned: BTreeSet<String> = BTreeSet::new();
+        let mut moves: Vec<Reschedule> = Vec::new();
+        let mut skips: Vec<(String, String)> = Vec::new();
+
+        for load in overloaded_days(&day_counts, config.daily_cap) {
+            let day_tasks: Vec<Task> = tasks
+                .iter()
+                .filter(|task| {
+                    task.due_date == Some(load.date)
+                        && task.status == Status::Pending
+                        && task.decomposed_at.is_none()
+                })
+                .cloned()
+                .collect();
+            for victim in tasks_to_move(&day_tasks, config.daily_cap) {
+                if planned.contains(&victim.id) {
+                    continue;
+                }
+                match next_open_day(
+                    load.date + Duration::days(1),
+                    today,
+                    &day_counts,
+                    config.daily_cap,
+                    config.horizon_days,
+                ) {
+                    Some(to) => {
+                        *day_counts.entry(to).or_insert(0) += 1;
+                        if load.date >= today
+                            && let Some(count) = day_counts.get_mut(&load.date)
+                        {
+                            *count = count.saturating_sub(1);
+                        }
+                        planned.insert(victim.id.clone());
+                        moves.push(Reschedule {
+                            task_id: victim.id.clone(),
+                            from: load.date,
+                            to,
+                            reason: format!(
+                                "{} had {} open tasks over the cap of {}",
+                                load.date.format("%Y-%m-%d"),
+                                load.count,
+                                config.daily_cap
+                            ),
+                        });
+                    }
+                    None => skips.push((
+                        victim.id.clone(),
+                        format!(
+                            "left on {}: no open day within {} days",
+                            load.date.format("%Y-%m-%d"),
+                            config.horizon_days
+                        ),
+                    )),
+                }
+            }
+        }
+
+        for ((date, time), group) in collision_groups(&tasks) {
+            let movable = group.iter().any(|task| !task.pinned);
+            if !movable {
+                if let Some(first) = group.first() {
+                    skips.push((
+                        first.id.clone(),
+                        format!(
+                            "same-time collision on {}: all tasks are pinned",
+                            date.format("%Y-%m-%d")
+                        ),
+                    ));
+                }
+                continue;
+            }
+            let group_owned: Vec<Task> = group.iter().map(|task| (*task).clone()).collect();
+            for victim in tasks_to_move(&group_owned, 1) {
+                if planned.contains(&victim.id) {
+                    continue;
+                }
+                let search_from = match time {
+                    Some(_) => date,
+                    None => date + Duration::days(1),
+                };
+                match next_open_day(
+                    search_from,
+                    today,
+                    &day_counts,
+                    config.daily_cap,
+                    config.horizon_days,
+                ) {
+                    Some(to) => {
+                        *day_counts.entry(to).or_insert(0) += 1;
+                        if date >= today
+                            && let Some(count) = day_counts.get_mut(&date)
+                        {
+                            *count = count.saturating_sub(1);
+                        }
+                        planned.insert(victim.id.clone());
+                        moves.push(Reschedule {
+                            task_id: victim.id.clone(),
+                            from: date,
+                            to,
+                            reason: format!("same-time collision on {}", date.format("%Y-%m-%d")),
+                        });
+                    }
+                    None => skips.push((
+                        victim.id.clone(),
+                        format!(
+                            "left on {}: no open day within {} days",
+                            date.format("%Y-%m-%d"),
+                            config.horizon_days
+                        ),
+                    )),
+                }
+            }
+        }
+
+        if !moves.is_empty() {
+            summary.rescheduled += apply_reschedules(conn, &moves, &run_id)?;
+        }
+        for (task_id, reason) in &skips {
+            record_skipped(conn, task_id, reason, &run_id)?;
+            summary.skipped += 1;
+        }
+
+        // 5. Optional LLM tie-break runs later; deterministic decisions stand.
+        Ok(summary)
+    })();
+
+    match &result {
+        Ok(summary) => finish_run(conn, &run_id, summary.total() as i64, None)?,
+        Err(error) => finish_run(conn, &run_id, 0, Some(&error.to_string()))?,
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1798,6 +2240,181 @@ mod tests {
         let loads = load_by_day(&conn, today, today).unwrap();
         assert_eq!(loads.get(&today).copied().unwrap_or(0), 0);
         assert!(next_task(&conn, today).unwrap().is_none());
+    }
+
+    #[test]
+    fn pinned_only_collision_moves_nothing_and_records_skipped() {
+        let mut conn = open_in_memory().unwrap();
+        let today = NaiveDate::from_ymd_opt(2026, 1, 10).unwrap();
+        let time = NaiveTime::from_hms_opt(9, 0, 0).unwrap();
+        for index in 0..2 {
+            add_task(
+                &mut conn,
+                &NewTask {
+                    title: format!("pinned meeting {index}"),
+                    due_date: Some(today),
+                    due_time: Some(time),
+                    pinned: true,
+                    ..NewTask::default()
+                },
+            )
+            .unwrap();
+        }
+
+        let config = SecretaryConfig {
+            daily_cap: 3,
+            ..SecretaryConfig::default()
+        };
+        let summary = run_secretary_pass(&mut conn, &config, today, None).unwrap();
+        assert_eq!(summary.rescheduled, 0);
+        assert_eq!(summary.skipped, 1);
+
+        let tasks = pending_tasks(&conn).unwrap();
+        assert_eq!(tasks.len(), 2);
+        assert!(tasks.iter().all(|task| task.due_date == Some(today)));
+        let decisions = list_decisions(&conn, None, None, None).unwrap();
+        assert!(decisions.iter().any(|decision| {
+            decision.kind == DecisionKind::Skipped
+                && decision.reason.contains("all tasks are pinned")
+        }));
+    }
+
+    #[test]
+    fn pass_resolves_stuck_and_overloaded_until_days_are_under_cap() {
+        let mut conn = open_in_memory().unwrap();
+        let today = NaiveDate::from_ymd_opt(2026, 1, 10).unwrap();
+        add_task(
+            &mut conn,
+            &NewTask {
+                title: "clean and sort the garage".into(),
+                due_date: Some(today - Duration::days(5)),
+                priority: Some(Priority::High),
+                ..NewTask::default()
+            },
+        )
+        .unwrap();
+        for index in 0..5 {
+            add_task(
+                &mut conn,
+                &NewTask {
+                    title: format!("today task {index}"),
+                    due_date: Some(today),
+                    priority: Some(Priority::Medium),
+                    ..NewTask::default()
+                },
+            )
+            .unwrap();
+        }
+
+        let config = SecretaryConfig {
+            daily_cap: 2,
+            ..SecretaryConfig::default()
+        };
+        let summary = run_secretary_pass(&mut conn, &config, today, None).unwrap();
+        assert!(summary.total() > 0);
+
+        let loads = load_by_day(&conn, today, today + Duration::days(14)).unwrap();
+        for (day, count) in loads {
+            assert!(count <= config.daily_cap, "{day} has {count} open tasks");
+        }
+    }
+
+    #[test]
+    fn undo_restores_the_previous_date_and_refuses_after_manual_edit() {
+        let mut conn = open_in_memory().unwrap();
+        let old = NaiveDate::from_ymd_opt(2026, 1, 5).unwrap();
+        let new = NaiveDate::from_ymd_opt(2026, 1, 12).unwrap();
+        let task = add_task(
+            &mut conn,
+            &NewTask {
+                title: "move me".into(),
+                due_date: Some(old),
+                ..NewTask::default()
+            },
+        )
+        .unwrap();
+        let run = start_run(&conn).unwrap();
+        let moves = vec![Reschedule {
+            task_id: task.id.clone(),
+            from: old,
+            to: new,
+            reason: "overdue".into(),
+        }];
+        apply_reschedules(&mut conn, &moves, &run).unwrap();
+        let decision = list_decisions(&conn, Some(&task.id), None, None).unwrap()[0].clone();
+
+        let restored = undo_decision(&mut conn, &decision.id).unwrap();
+        assert_eq!(restored.due_date, Some(old));
+        assert!(
+            get_decision(&conn, &decision.id)
+                .unwrap()
+                .undone_at
+                .is_some()
+        );
+
+        // A second decision followed by a manual edit cannot be undone.
+        let moves = vec![Reschedule {
+            task_id: task.id.clone(),
+            from: old,
+            to: new,
+            reason: "overdue again".into(),
+        }];
+        apply_reschedules(&mut conn, &moves, &run).unwrap();
+        let latest = list_decisions(&conn, Some(&task.id), None, None).unwrap()[0].clone();
+        update_task(
+            &conn,
+            &task.id,
+            &TaskUpdate {
+                due_date: Some(Some(old + Duration::days(30))),
+                ..TaskUpdate::default()
+            },
+        )
+        .unwrap();
+        let error = undo_decision(&mut conn, &latest.id).unwrap_err();
+        assert!(error.to_string().contains("edited manually"));
+        assert_eq!(
+            get_task(&conn, &task.id).unwrap().due_date,
+            Some(old + Duration::days(30))
+        );
+    }
+
+    #[test]
+    fn prune_keeps_undone_decisions_and_honours_before() {
+        let mut conn = open_in_memory().unwrap();
+        let base = NaiveDate::from_ymd_opt(2026, 1, 5).unwrap();
+        let run = start_run(&conn).unwrap();
+        let mut ids = Vec::new();
+        for index in 0..2 {
+            let task = add_task(
+                &mut conn,
+                &NewTask {
+                    title: format!("task {index}"),
+                    due_date: Some(base + Duration::days(index)),
+                    ..NewTask::default()
+                },
+            )
+            .unwrap();
+            let moves = vec![Reschedule {
+                task_id: task.id.clone(),
+                from: base + Duration::days(index),
+                to: base + Duration::days(10 + index),
+                reason: "move".into(),
+            }];
+            apply_reschedules(&mut conn, &moves, &run).unwrap();
+            let decisions = list_decisions(&conn, Some(&task.id), None, None).unwrap();
+            ids.push(decisions[0].id.clone());
+        }
+        mark_decision_undone(&conn, &ids[0]).unwrap();
+
+        // Nothing is deleted by merely reading; pruning before the run start
+        // deletes the live row but keeps the undone one.
+        let cutoff = NaiveDate::from_ymd_opt(2030, 1, 1).unwrap();
+        let result = prune_decisions(&conn, Some(cutoff)).unwrap();
+        assert_eq!(result.deleted, 1);
+        assert_eq!(result.retained_undone, 1);
+        let remaining = list_decisions(&conn, None, None, None).unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, ids[0]);
     }
 
     #[test]

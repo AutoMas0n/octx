@@ -14,18 +14,18 @@
 - [x] 2.3 Implement bounded rescheduling to the next open day within the configured horizon; verify tests cover success, horizon exhaustion, and no move into the past.
 - [x] 2.4 Exclude pinned and recurring tasks from overdue rescheduling; verify tests confirm each exclusion.
 - [x] 2.5 Implement a single-transaction pass that writes decisions and updates due dates atomically; verify a test rolls back on a mid-pass failure.
-- [ ] 2.6 Implement the fixed stage order (decompose, undated fill, overdue reschedule, overload/collision, optional tie-break) in one pass; verify a test with both a stuck task and an overloaded day ends with every day at or under the cap.
-- [ ] 2.7 Record a `skipped` decision when a collision contains only pinned tasks; verify a unit test moves none of them.
-- [ ] 2.8 Implement `decisions prune [--before <date>]`; retain rows indefinitely by default, delete only on explicit request, and refuse to delete a row referenced by an undone decision; verify tests cover default retention, explicit prune, and the refusal case.
+- [x] 2.6 Implement the fixed stage order (decompose, undated fill, overdue reschedule, overload/collision, optional tie-break) in one pass; verify a test with both a stuck task and an overloaded day ends with every day at or under the cap.
+- [x] 2.7 Record a `skipped` decision when a collision contains only pinned tasks; verify a unit test moves none of them.
+- [x] 2.8 Implement `decisions prune [--before <date>]`; retain rows indefinitely by default, delete only on explicit request, and refuse to delete a row referenced by an undone decision; verify tests cover default retention, explicit prune, and the refusal case.
 
 ## 3. Commands and decision log
 
-- [ ] 3.1 Add `pin` and `unpin` commands; verify integration tests change the flag and do not change due date or status.
-- [ ] 3.2 Add `secretary` with `--dry-run` and `--notify`; verify a dry run prints proposed deterministic decisions, writes no rows, sends no prompt, and makes no LLM request, while a real run writes them.
-- [ ] 3.3 Add `decisions [--limit N]` to list the log; verify an integration test shows old date, new date, reason, and timestamp.
-- [ ] 3.4 Add `undo [last|<id>]` to reverse a decision and restore the prior due date; verify a test confirms the restore and marks the decision undone.
-- [ ] 3.5 Refuse undo when the task's current due date no longer matches the decision; verify the refusal message names the task and the manual edit.
-- [ ] 3.6 Add `secretary --status`; verify a test reports a successful run, a failed run, and a missed schedule with a non-zero exit.
+- [x] 3.1 Add `pin` and `unpin` commands; verify integration tests change the flag and do not change due date or status.
+- [x] 3.2 Add `secretary` with `--dry-run` and `--notify`; verify a dry run prints proposed deterministic decisions, writes no rows, sends no prompt, and makes no LLM request, while a real run writes them.
+- [x] 3.3 Add `decisions [--limit N]` to list the log; verify an integration test shows old date, new date, reason, and timestamp.
+- [x] 3.4 Add `undo [last|<id>]` to reverse a decision and restore the prior due date; verify a test confirms the restore and marks the decision undone.
+- [x] 3.5 Refuse undo when the task's current due date no longer matches the decision; verify the refusal message names the task and the manual edit.
+- [x] 3.6 Add `secretary --status`; verify a test reports a successful run, a failed run, and a missed schedule with a non-zero exit.
 
 ## 4. Notifications and quiet hours
 

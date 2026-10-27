@@ -344,7 +344,7 @@ pub fn validate_subtasks(titles: &[String]) -> Option<Vec<String>> {
 /// The reply is filtered down to ids that were actually asked about, and
 /// each parent's steps are validated independently. Invalid parents are
 /// simply absent from the result, so the caller can fall back per parent.
-pub fn propose_decompositions<C: Completer>(
+pub fn propose_decompositions<C: Completer + ?Sized>(
     completer: &C,
     candidates: &[&Task],
 ) -> std::result::Result<BTreeMap<String, Vec<String>>, String> {
