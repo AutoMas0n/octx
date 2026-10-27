@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{Duration, NaiveDate, NaiveTime};
 
-use crate::model::{Priority, Scheduled, Status, Task};
+use crate::model::{Priority, Reschedule, Scheduled, Status, Task};
 
 /// A day whose pending-task count exceeds the configured cap.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -365,6 +365,87 @@ pub fn propose_decompositions<C: Completer + ?Sized>(
         }
     }
     Ok(accepted)
+}
+
+/// Build the one optional tie-break request for a run.
+///
+/// The model may only reorder or explain the proposals it is handed. It is
+/// told explicitly that it cannot add, drop, or change a move.
+pub fn tie_break_prompt(proposals: &[Reschedule]) -> (String, String) {
+    let system = "You order equally valid task moves. Reply with only a JSON         array containing every task_id exactly once, in the order they should         be applied, each item shaped {\"task_id\": string, \"to\": \"YYYY-MM-DD\"}.         You may not add, remove, or change a move. Do not add commentary.";
+    let listing: Vec<serde_json::Value> = proposals
+        .iter()
+        .map(|proposal| {
+            serde_json::json!({
+                "task_id": proposal.task_id,
+                "from": proposal.from.format("%Y-%m-%d").to_string(),
+                "to": proposal.to.format("%Y-%m-%d").to_string(),
+                "reason": proposal.reason,
+            })
+        })
+        .collect();
+    (
+        system.to_string(),
+        format!(
+            "Order these moves:\n{}",
+            serde_json::to_string_pretty(&listing).unwrap_or_default()
+        ),
+    )
+}
+
+/// Accept a tie-break reply only when it is a pure reordering.
+///
+/// Every proposal must appear exactly once with unchanged `to`; anything
+/// else (an unknown task, a changed day, a dropped or repeated move) is
+/// rejected. Because the accepted set is identical, the model can never move
+/// a pinned task, exceed the cap or horizon, move into the past, or complete a
+/// task. Returns `None` on any violation.
+pub fn validate_tie_break(proposals: &[Reschedule], reply: &str) -> Option<Vec<Reschedule>> {
+    let value: serde_json::Value = serde_json::from_str(reply.trim()).ok()?;
+    let items = value.as_array()?;
+    if items.len() != proposals.len() {
+        return None;
+    }
+    let parsed: Vec<(String, String)> = items
+        .iter()
+        .map(|item| {
+            Some((
+                item.get("task_id")?.as_str()?.to_string(),
+                item.get("to")?.as_str()?.to_string(),
+            ))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let mut used = vec![false; proposals.len()];
+    let mut ordered = Vec::with_capacity(proposals.len());
+    for (task_id, to) in parsed {
+        let index = proposals
+            .iter()
+            .enumerate()
+            .find(|(index, proposal)| {
+                !used[*index]
+                    && proposal.task_id == task_id
+                    && proposal.to.format("%Y-%m-%d").to_string() == to
+            })
+            .map(|(index, _)| index)?;
+        used[index] = true;
+        ordered.push(proposals[index].clone());
+    }
+    Some(ordered)
+}
+
+/// Whether a local hour falls inside the configured quiet window.
+///
+/// The window may wrap midnight (`22-7`). Equal bounds mean no quiet time.
+pub fn in_quiet_hours(hour: u32, quiet: (u8, u8)) -> bool {
+    let (start, end) = (quiet.0 as u32, quiet.1 as u32);
+    if start == end {
+        return false;
+    }
+    if start < end {
+        hour >= start && hour < end
+    } else {
+        hour >= start || hour < end
+    }
 }
 
 /// The day an undated task of this priority starts its search.
@@ -1278,5 +1359,59 @@ mod tests {
         high.priority = Priority::High;
         let scheduled = schedule_undated(&[&high], today, &mut counts, 3, 14);
         assert_eq!(scheduled[0].due_date, day(2026, 1, 11));
+    }
+
+    #[test]
+    fn quiet_hours_cover_wrapping_and_daytime_windows() {
+        assert!(in_quiet_hours(23, (22, 7)));
+        assert!(in_quiet_hours(2, (22, 7)));
+        assert!(!in_quiet_hours(7, (22, 7)));
+        assert!(!in_quiet_hours(12, (22, 7)));
+        assert!(in_quiet_hours(13, (12, 14)));
+        assert!(!in_quiet_hours(9, (12, 14)));
+        assert!(!in_quiet_hours(3, (0, 0)));
+    }
+
+    #[test]
+    fn tie_break_accepts_a_permutation_and_rejects_an_unsafe_move() {
+        let proposals = vec![
+            Reschedule {
+                task_id: "a".into(),
+                from: day(2026, 1, 10),
+                to: day(2026, 1, 11),
+                reason: "move".into(),
+            },
+            Reschedule {
+                task_id: "b".into(),
+                from: day(2026, 1, 10),
+                to: day(2026, 1, 12),
+                reason: "move".into(),
+            },
+        ];
+        let reordered = validate_tie_break(
+            &proposals,
+            r#"[{"task_id":"b","to":"2026-01-12"},{"task_id":"a","to":"2026-01-11"}]"#,
+        )
+        .expect("a pure reordering is accepted");
+        assert_eq!(reordered[0].task_id, "b");
+
+        // A new move for a pinned/other task is not part of the proposal set.
+        assert!(
+            validate_tie_break(
+                &proposals,
+                r#"[{"task_id":"a","to":"2026-01-11"},{"task_id":"pinned","to":"2026-01-01"}]"#
+            )
+            .is_none()
+        );
+        // Changing a day is a violation too.
+        assert!(
+            validate_tie_break(
+                &proposals,
+                r#"[{"task_id":"a","to":"2026-01-20"},{"task_id":"b","to":"2026-01-12"}]"#
+            )
+            .is_none()
+        );
+        // Dropping a move.
+        assert!(validate_tie_break(&proposals, r#"[{"task_id":"a","to":"2026-01-11"}]"#).is_none());
     }
 }

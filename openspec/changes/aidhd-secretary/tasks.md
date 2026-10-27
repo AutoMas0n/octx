@@ -29,15 +29,15 @@
 
 ## 4. Notifications and quiet hours
 
-- [ ] 4.1 Implement one combined action prompt per run with the move count, next action, and undo hint; verify a mock sink receives exactly one message.
-- [ ] 4.2 Implement configurable quiet hours and suppress prompts inside them while still recording decisions; verify a test covers both inside and outside the window.
-- [ ] 4.3 Reuse the core notification dedup marker so the secretary does not re-prompt the same task on the next run; verify a test confirms no duplicate prompt.
+- [x] 4.1 Implement one combined action prompt per run with the move count, next action, and undo hint; verify a mock sink receives exactly one message.
+- [x] 4.2 Implement configurable quiet hours and suppress prompts inside them while still recording decisions; verify a test covers both inside and outside the window.
+- [x] 4.3 Reuse the core notification dedup marker so the secretary does not re-prompt the same task on the next run; verify a test confirms no duplicate prompt.
 
 ## 5. LLM integration
 
-- [ ] 5.1 Add an optional LLM tie-break/explanation path that receives proposed decisions; verify a test confirms the deterministic decisions are unchanged when the LLM returns an unsafe move.
-- [ ] 5.2 Fall back deterministically when the credential is missing or the request fails; verify the fallback is reported on stderr and the run still completes.
-- [ ] 5.3 Ensure the LLM cannot move pinned tasks, exceed the cap or horizon, move into the past, or complete tasks; verify a unit test rejects each violation.
+- [x] 5.1 Add an optional LLM tie-break/explanation path that receives proposed decisions; verify a test confirms the deterministic decisions are unchanged when the LLM returns an unsafe move.
+- [x] 5.2 Fall back deterministically when the credential is missing or the request fails; verify the fallback is reported on stderr and the run still completes.
+- [x] 5.3 Ensure the LLM cannot move pinned tasks, exceed the cap or horizon, move into the past, or complete tasks; verify a unit test rejects each violation.
 
 ## 5a. Stuck-task decomposition
 
@@ -58,7 +58,7 @@
 - [x] 5b.3 Add `--unscheduled` and honor `AIDHD_AUTO_SCHEDULE=0`; verify a test confirms the due date stays empty and no note is printed.
 - [x] 5b.4 Make the secretary pass fill undated open tasks that slipped in from imports or older data and record a `scheduled` decision; verify an integration test covers the fill and the decision row.
 - [x] 5b.5 Exclude recurring tasks from auto-scheduling and derive their next occurrence from the recurrence pattern; verify a test confirms a recurring undated task is not given an arbitrary date.
-- [ ] 5b.6 Read `AIDHD_DAILY_CAP`, `AIDHD_HORIZON_DAYS`, `AIDHD_QUIET_HOURS`, `AIDHD_STUCK_AFTER_DAYS`, `AIDHD_STUCK_AFTER_MOVES`, `AIDHD_MAX_DECOMPOSITIONS`, and `AIDHD_SECRETARY_CADENCE` through the config layer, with env overriding the file; verify a test sets each variable and observes the policy change.
+- [x] 5b.6 Read `AIDHD_DAILY_CAP`, `AIDHD_HORIZON_DAYS`, `AIDHD_QUIET_HOURS`, `AIDHD_STUCK_AFTER_DAYS`, `AIDHD_STUCK_AFTER_MOVES`, `AIDHD_MAX_DECOMPOSITIONS`, and `AIDHD_SECRETARY_CADENCE` through the config layer, with env overriding the file; verify a test sets each variable and observes the policy change.
 
 ## 6. Skill and scheduling
 

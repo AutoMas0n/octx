@@ -585,3 +585,85 @@ fn decisions_prune_needs_an_explicit_request() {
     let remaining = json_of(&run(&db, &["decisions", "--json"]));
     assert_eq!(remaining.as_array().unwrap().len(), 0);
 }
+
+#[test]
+fn secretary_notify_sends_one_prompt_and_dedups_the_same_task() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = temp_db(dir.path());
+    let bin_dir = dir.path().join("bin");
+    std::fs::create_dir(&bin_dir).unwrap();
+    let log = dir.path().join("notify.log");
+    write_stub(
+        &bin_dir,
+        "termux-notification",
+        &format!("#!/bin/sh\nprintf '%s\\n' \"$@\" >> {}\n", log.display()),
+    );
+    let path = format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let run_notify = || {
+        Command::new(bin())
+            .env("OCTX_AIDHD_DB", &db)
+            .env("AIDHD_SINK", "termux")
+            .env("AIDHD_AI_DISABLED", "1")
+            .env("PATH", &path)
+            .args(["secretary", "--notify"])
+            .output()
+            .unwrap()
+    };
+
+    add_overdue(&db, "overdue chore");
+    let first = run_notify();
+    assert!(first.status.success());
+    let first_log = std::fs::read_to_string(&log).unwrap();
+    assert!(first_log.contains("task(s) moved"));
+    assert!(first_log.contains("Undo with"));
+
+    // A second pass that schedules a new task still must not re-prompt the
+    // same next action.
+    assert!(
+        run(&db, &["add", "later thing", "--unscheduled"])
+            .status
+            .success()
+    );
+    let second = run_notify();
+    assert!(second.status.success());
+    let second_log = std::fs::read_to_string(&log).unwrap();
+    assert_eq!(first_log, second_log);
+}
+
+#[test]
+fn secretary_quiet_hours_suppress_the_prompt_but_keep_decisions() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = temp_db(dir.path());
+    let bin_dir = dir.path().join("bin");
+    std::fs::create_dir(&bin_dir).unwrap();
+    let log = dir.path().join("notify.log");
+    write_stub(
+        &bin_dir,
+        "termux-notification",
+        &format!("#!/bin/sh\nprintf '%s\\n' \"$@\" >> {}\n", log.display()),
+    );
+    let path = format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    add_overdue(&db, "overdue chore");
+
+    let quiet = Command::new(bin())
+        .env("OCTX_AIDHD_DB", &db)
+        .env("AIDHD_SINK", "termux")
+        .env("AIDHD_AI_DISABLED", "1")
+        .env("AIDHD_QUIET_HOURS", "0-23")
+        .env("PATH", &path)
+        .args(["secretary", "--notify"])
+        .output()
+        .unwrap();
+    assert!(quiet.status.success());
+    assert!(!log.exists(), "quiet hours must not notify");
+    let decisions = json_of(&run(&db, &["decisions", "--json"]));
+    assert!(!decisions.as_array().unwrap().is_empty());
+}

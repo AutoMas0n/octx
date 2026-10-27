@@ -1453,6 +1453,22 @@ pub fn run_secretary_pass(
             }
         }
 
+        if moves.len() >= 2
+            && let Some(completer) = completer
+        {
+            let (system, user) = crate::secretary::tie_break_prompt(&moves);
+            match completer.complete(&system, &user) {
+                Ok(reply) => {
+                    if let Some(ordered) = crate::secretary::validate_tie_break(&moves, &reply) {
+                        moves = ordered;
+                    }
+                }
+                Err(error) => eprintln!(
+                    "aidhd: tie-break request failed ({error}); using deterministic order"
+                ),
+            }
+        }
+
         if !moves.is_empty() {
             summary.rescheduled += apply_reschedules(conn, &moves, &run_id)?;
         }
@@ -1461,7 +1477,6 @@ pub fn run_secretary_pass(
             summary.skipped += 1;
         }
 
-        // 5. Optional LLM tie-break runs later; deterministic decisions stand.
         Ok(summary)
     })();
 
@@ -2240,6 +2255,42 @@ mod tests {
         let loads = load_by_day(&conn, today, today).unwrap();
         assert_eq!(loads.get(&today).copied().unwrap_or(0), 0);
         assert!(next_task(&conn, today).unwrap().is_none());
+    }
+
+    struct GarbageCompleter;
+
+    impl Completer for GarbageCompleter {
+        fn complete(&self, _system: &str, _user: &str) -> std::result::Result<String, String> {
+            Ok("not a json reply".into())
+        }
+    }
+
+    #[test]
+    fn unsafe_tie_break_reply_keeps_deterministic_decisions() {
+        let mut conn = open_in_memory().unwrap();
+        let today = NaiveDate::from_ymd_opt(2026, 1, 10).unwrap();
+        for index in 0..5 {
+            add_task(
+                &mut conn,
+                &NewTask {
+                    title: format!("task {index}"),
+                    due_date: Some(today),
+                    ..NewTask::default()
+                },
+            )
+            .unwrap();
+        }
+        let config = SecretaryConfig {
+            daily_cap: 2,
+            ..SecretaryConfig::default()
+        };
+        let summary =
+            run_secretary_pass(&mut conn, &config, today, Some(&GarbageCompleter)).unwrap();
+        assert!(summary.rescheduled > 0);
+        let loads = load_by_day(&conn, today, today + Duration::days(14)).unwrap();
+        for (day, count) in loads {
+            assert!(count <= config.daily_cap, "{day} has {count} open tasks");
+        }
     }
 
     #[test]

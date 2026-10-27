@@ -2,7 +2,7 @@ use std::io::Read;
 use std::path::PathBuf;
 
 use anyhow::{Context, bail};
-use chrono::{Duration, Local, NaiveDate};
+use chrono::{Duration, Local, NaiveDate, Timelike};
 use rusqlite::Connection;
 
 use crate::cli::{Cli, Commands, DecisionsCommand};
@@ -229,7 +229,7 @@ fn dispatch(
             if status {
                 secretary_status(conn, json)
             } else {
-                secretary_pass(conn, dry_run, notify, json, sink)
+                secretary_pass(conn, dry_run, notify, json, sink, llm)
             }
         }
         Commands::Decisions {
@@ -493,12 +493,23 @@ fn secretary_status(conn: &Connection, json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+struct LlmCompleter<'a>(&'a LlmClient);
+
+impl secretary::Completer for LlmCompleter<'_> {
+    fn complete(&self, system: &str, user: &str) -> std::result::Result<String, String> {
+        self.0
+            .complete(system, user)
+            .map_err(|error| error.to_string())
+    }
+}
+
 fn secretary_pass(
     conn: &mut Connection,
     dry_run: bool,
     notify: bool,
     json: bool,
     sink: &dyn Sink,
+    llm: &LlmClient,
 ) -> anyhow::Result<()> {
     let config = config::resolve_secretary()?;
     let today = Local::now().date_naive();
@@ -515,17 +526,58 @@ fn secretary_pass(
         return result;
     }
 
-    let summary = db::run_secretary_pass(conn, &config, today, None)?;
+    let adapter = LlmCompleter(llm);
+    let summary = if ai_enabled() {
+        db::run_secretary_pass(conn, &config, today, Some(&adapter))?
+    } else {
+        db::run_secretary_pass(conn, &config, today, None)?
+    };
     if notify && summary.total() > 0 {
-        sink.notify(
-            "aidhd secretary",
-            &format!(
-                "{} rescheduled, {} scheduled, {} decomposed, {} skipped. Use `aidhd undo` to reverse the last change.",
-                summary.rescheduled, summary.scheduled, summary.decomposed, summary.skipped
-            ),
-        )?;
+        let hour = Local::now().hour();
+        if !secretary::in_quiet_hours(hour, config.quiet_hours)
+            && let Some((body, ids)) = secretary_prompt(conn, &summary, today)?
+        {
+            sink.notify("aidhd secretary", &body)
+                .map_err(|error| anyhow::anyhow!("notification failed: {error}"))?;
+            db::mark_notified(conn, &ids)?;
+            println!("{body}");
+        }
     }
     print_pass(conn, &summary, json)
+}
+
+/// Build the single combined prompt for a pass, if one should be sent.
+///
+/// The prompt names the move count, the next action, and how to undo. It is
+/// skipped when the same next task was already announced: the shared
+/// `notified_at` marker keeps a re-run from nagging about the same task, while
+/// the decisions themselves are still recorded.
+fn secretary_prompt(
+    conn: &Connection,
+    summary: &db::PassSummary,
+    today: NaiveDate,
+) -> anyhow::Result<Option<(String, Vec<String>)>> {
+    let Some(next) = db::next_task(conn, today)? else {
+        return Ok(None);
+    };
+    if next.notified_at.is_some() {
+        return Ok(None);
+    }
+    let mut moved = summary.rescheduled + summary.scheduled;
+    if summary.decomposed > 0 {
+        moved += summary.decomposed;
+    }
+    let undo = db::list_decisions(conn, None, None, Some(1))?
+        .into_iter()
+        .next()
+        .map(|decision| format!("`aidhd undo {}`", short_id(&decision.id)))
+        .unwrap_or_else(|| "`aidhd undo`".into());
+    let body = format!(
+        "{moved} task(s) moved. Next: {} ({}). Undo with {undo}.",
+        next.title,
+        short_id(&next.id)
+    );
+    Ok(Some((body, vec![next.id])))
 }
 
 fn print_pass(conn: &Connection, summary: &db::PassSummary, json: bool) -> anyhow::Result<()> {
