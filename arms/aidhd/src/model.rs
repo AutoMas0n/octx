@@ -280,6 +280,14 @@ pub struct Reschedule {
     pub reason: String,
 }
 
+/// A due date assigned to a previously undated task.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Scheduled {
+    pub task_id: String,
+    pub due_date: NaiveDate,
+    pub reason: String,
+}
+
 /// A single secretary pass.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Run {

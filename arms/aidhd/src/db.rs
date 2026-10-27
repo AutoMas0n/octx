@@ -7,8 +7,8 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::model::{
-    Decision, DecisionKind, NewDecision, NewTask, Priority, Recurrence, Reschedule, Run, Stats,
-    Status, Task, TaskFilter, TaskUpdate,
+    Decision, DecisionKind, NewDecision, NewTask, Priority, Recurrence, Reschedule, Run, Scheduled,
+    Stats, Status, Task, TaskFilter, TaskUpdate,
 };
 
 #[derive(Debug, Error)]
@@ -714,6 +714,57 @@ pub fn apply_reschedules(
 ///
 /// Records one `decomposed` decision whose `details` JSON lists the child ids,
 /// which is what undo later cancels. Returns the decision and child ids.
+/// Apply a set of auto-scheduling decisions as one transaction.
+///
+/// A task whose due date is no longer empty was edited during the run; the
+/// batch aborts rather than overwrite a manual date. Returns the number of
+/// tasks scheduled.
+pub fn apply_scheduled(conn: &mut Connection, items: &[Scheduled], run_id: &str) -> Result<usize> {
+    let tx = conn.transaction()?;
+    let timestamp = now();
+    for item in items {
+        let found: Option<Option<String>> = tx
+            .query_row(
+                "SELECT due_date FROM tasks WHERE id = ?1",
+                params![item.task_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let current = found.ok_or_else(|| DbError::NotFound(item.task_id.clone()))?;
+        if let Some(stored) = current {
+            return Err(DbError::Conflict {
+                task_id: item.task_id.clone(),
+                expected: "none".into(),
+                actual: stored,
+            });
+        }
+        tx.execute(
+            "UPDATE tasks SET due_date = ?2, updated_at = ?3 WHERE id = ?1",
+            params![
+                item.task_id,
+                item.due_date.format("%Y-%m-%d").to_string(),
+                timestamp,
+            ],
+        )?;
+        tx.execute(
+            "INSERT INTO decisions (
+                id, task_id, kind, old_due_date, new_due_date, reason, details,
+                created_at, undone_at, run_id
+             ) VALUES (?1, ?2, 'scheduled', NULL, ?3, ?4, NULL, ?5, NULL, ?6)",
+            params![
+                Uuid::new_v4().to_string(),
+                item.task_id,
+                item.due_date.format("%Y-%m-%d").to_string(),
+                item.reason,
+                timestamp,
+                run_id,
+            ],
+        )?;
+    }
+    tx.commit()?;
+    Ok(items.len())
+}
+
 pub fn apply_decomposition(
     conn: &mut Connection,
     parent_id: &str,
@@ -1747,5 +1798,70 @@ mod tests {
         let loads = load_by_day(&conn, today, today).unwrap();
         assert_eq!(loads.get(&today).copied().unwrap_or(0), 0);
         assert!(next_task(&conn, today).unwrap().is_none());
+    }
+
+    #[test]
+    fn apply_scheduled_sets_due_date_and_records_decision() {
+        let mut conn = open_in_memory().unwrap();
+        let today = NaiveDate::from_ymd_opt(2026, 1, 10).unwrap();
+        let task = add_task(
+            &mut conn,
+            &NewTask {
+                title: "imported later".into(),
+                priority: Some(Priority::High),
+                ..NewTask::default()
+            },
+        )
+        .unwrap();
+        let loaded = list_tasks(
+            &conn,
+            &TaskFilter {
+                status: Some(Status::Pending),
+                ..TaskFilter::default()
+            },
+        )
+        .unwrap();
+        let candidates = crate::secretary::undated_fill_candidates(&loaded);
+        let mut counts = BTreeMap::new();
+        let scheduled = crate::secretary::schedule_undated(&candidates, today, &mut counts, 3, 14);
+        assert_eq!(scheduled.len(), 1);
+
+        let run = start_run(&conn).unwrap();
+        assert_eq!(apply_scheduled(&mut conn, &scheduled, &run).unwrap(), 1);
+
+        let reloaded = get_task(&conn, &task.id).unwrap();
+        assert_eq!(reloaded.due_date, Some(today));
+        let decisions = list_decisions(&conn, None, None, None).unwrap();
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].kind, DecisionKind::Scheduled);
+        assert_eq!(decisions[0].new_due_date, Some(today));
+    }
+
+    #[test]
+    fn apply_scheduled_refuses_a_manually_dated_task() {
+        let mut conn = open_in_memory().unwrap();
+        let task = add_task(
+            &mut conn,
+            &NewTask {
+                title: "edited mid run".into(),
+                due_date: Some(NaiveDate::from_ymd_opt(2026, 1, 9).unwrap()),
+                ..NewTask::default()
+            },
+        )
+        .unwrap();
+        let run = start_run(&conn).unwrap();
+        let items = vec![Scheduled {
+            task_id: task.id.clone(),
+            due_date: NaiveDate::from_ymd_opt(2026, 1, 10).unwrap(),
+            reason: "filled".into(),
+        }];
+        assert!(matches!(
+            apply_scheduled(&mut conn, &items, &run),
+            Err(DbError::Conflict { .. })
+        ));
+        assert_eq!(
+            get_task(&conn, &task.id).unwrap().due_date,
+            Some(NaiveDate::from_ymd_opt(2026, 1, 9).unwrap())
+        );
     }
 }

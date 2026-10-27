@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{Duration, NaiveDate, NaiveTime};
 
-use crate::model::{Priority, Status, Task};
+use crate::model::{Priority, Scheduled, Status, Task};
 
 /// A day whose pending-task count exceeds the configured cap.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -425,6 +425,32 @@ pub fn schedule_reason(
             start.format("%Y-%m-%d")
         ),
     }
+}
+
+/// Assign due dates to undated candidates, updating the running day counts.
+///
+/// Candidates are served in the order given, each at the first open day for
+/// its priority. A candidate with no capacity inside the horizon is left out
+/// of the result and stays undated. The caller applies the result atomically.
+pub fn schedule_undated(
+    candidates: &[&Task],
+    today: NaiveDate,
+    counts: &mut BTreeMap<NaiveDate, usize>,
+    cap: usize,
+    horizon_days: i64,
+) -> Vec<Scheduled> {
+    let mut scheduled = Vec::new();
+    for task in candidates {
+        let choice = auto_schedule(task.priority, today, counts, cap, horizon_days);
+        let Some(day) = choice else { continue };
+        *counts.entry(day).or_insert(0) += 1;
+        scheduled.push(Scheduled {
+            task_id: task.id.clone(),
+            due_date: day,
+            reason: schedule_reason(task.priority, today, choice, horizon_days),
+        });
+    }
+    scheduled
 }
 
 /// Select undated tasks the fill stage may schedule.
@@ -1225,5 +1251,32 @@ mod tests {
         assert!(reason.contains("2026-01-10"));
         let reason = schedule_reason(Priority::High, today, None, 14);
         assert!(reason.contains("left undated"));
+    }
+
+    #[test]
+    fn schedule_undated_respects_priority_and_cap() {
+        let today = day(2026, 1, 10);
+        let mut high = candidate_task("urgent", None, false, None, Status::Pending);
+        high.priority = Priority::High;
+        let medium = candidate_task("soon", None, false, None, Status::Pending);
+        let candidates = vec![&high, &medium];
+        let mut counts = BTreeMap::new();
+        let scheduled = schedule_undated(&candidates, today, &mut counts, 3, 14);
+        assert_eq!(scheduled.len(), 2);
+        assert_eq!(scheduled[0].due_date, today);
+        assert_eq!(scheduled[1].due_date, day(2026, 1, 11));
+        assert_eq!(counts.get(&today), Some(&1));
+        assert_eq!(counts.get(&day(2026, 1, 11)), Some(&1));
+    }
+
+    #[test]
+    fn schedule_undated_skips_a_full_day() {
+        let today = day(2026, 1, 10);
+        let mut counts = BTreeMap::new();
+        counts.insert(today, 3usize);
+        let mut high = candidate_task("urgent", None, false, None, Status::Pending);
+        high.priority = Priority::High;
+        let scheduled = schedule_undated(&[&high], today, &mut counts, 3, 14);
+        assert_eq!(scheduled[0].due_date, day(2026, 1, 11));
     }
 }
