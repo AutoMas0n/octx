@@ -7,3 +7,4 @@ pub mod llm;
 pub mod model;
 pub mod secretary;
 pub mod sink;
+pub mod web;

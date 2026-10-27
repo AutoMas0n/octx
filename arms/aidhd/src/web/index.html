@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>aidhd</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 15px/1.5 system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 1rem; }
+  h1 { font-size: 1.3rem; margin: .2rem 0 1rem; }
+  section { margin-bottom: 1.2rem; }
+  .stats { display: flex; gap: 1rem; flex-wrap: wrap; }
+  .stats div { padding: .4rem .7rem; border: 1px solid #8884; border-radius: .4rem; }
+  ul { list-style: none; padding: 0; }
+  li { display: flex; gap: .5rem; align-items: center; padding: .35rem 0; border-bottom: 1px solid #8883; }
+  li .title { flex: 1; }
+  .muted { opacity: .65; font-size: .85rem; }
+  form { display: flex; gap: .5rem; flex-wrap: wrap; }
+  input, button { font: inherit; padding: .35rem .5rem; }
+  input[type=text] { flex: 1; min-width: 12rem; }
+  #error { color: #d33; }
+</style>
+</head>
+<body>
+<h1>aidhd dashboard</h1>
+<p id="error"></p>
+<section>
+  <h2>Stats</h2>
+  <div class="stats" id="stats"></div>
+</section>
+<section>
+  <h2>Next</h2>
+  <div id="next" class="muted">loading…</div>
+</section>
+<section>
+  <h2>Pending</h2>
+  <ul id="tasks"></ul>
+</section>
+<section>
+  <h2>Add task</h2>
+  <form id="add-form">
+    <input id="title" type="text" placeholder="Task title" required>
+    <input id="due" type="date" aria-label="Due date">
+    <button type="submit">Add</button>
+  </form>
+</section>
+<section>
+  <h2>Secretary</h2>
+  <button id="run-secretary" type="button">Run secretary</button>
+  <button id="dry-secretary" type="button">Dry run</button>
+  <pre id="secretary-result" class="muted"></pre>
+</section>
+<script>
+const $ = (id) => document.getElementById(id);
+const showError = (message) => { $('error').textContent = message || ''; };
+const api = async (path, options) => {
+  const response = await fetch(path, options);
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || `${response.status} ${response.statusText}`);
+  return data;
+};
+const escapeHtml = (value) => String(value).replace(/[&<>"']/g, (c) => ({
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+}[c]));
+
+const renderStats = (stats) => {
+  $('stats').innerHTML = [
+    ['pending', stats.pending], ['completed', stats.completed],
+    ['cancelled', stats.cancelled], ['total', stats.total]
+  ].map(([label, value]) => `<div><strong>${value}</strong> ${label}</div>`).join('');
+};
+
+const renderNext = (task) => {
+  $('next').innerHTML = task
+    ? `<strong>${escapeHtml(task.title)}</strong> <span class="muted">${task.due_date || 'undated'}</span>`
+    : 'Nothing scheduled.';
+};
+
+const renderTasks = (tasks) => {
+  $('tasks').innerHTML = tasks.length ? tasks.map((task) => `
+    <li>
+      <span class="title">${escapeHtml(task.title)} <span class="muted">${task.due_date || 'undated'}${task.priority !== 'medium' ? ` · ${task.priority}` : ''}</span></span>
+      <button type="button" data-done="${escapeHtml(task.id)}">Done</button>
+    </li>`).join('') : '<li class="muted">No pending tasks.</li>';
+  for (const button of document.querySelectorAll('[data-done]')) {
+    button.addEventListener('click', async () => {
+      try {
+        await api(`/api/tasks/${encodeURIComponent(button.dataset.done)}/done`, { method: 'POST' });
+        await refresh();
+      } catch (error) { showError(error.message); }
+    });
+  }
+};
+
+const refresh = async () => {
+  try {
+    const [stats, next, tasks] = await Promise.all([
+      api('/api/stats'), api('/api/next'), api('/api/tasks')
+    ]);
+    renderStats(stats); renderNext(next); renderTasks(tasks); showError('');
+  } catch (error) { showError(error.message); }
+};
+
+$('add-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const title = $('title').value.trim();
+  if (!title) return;
+  const due = $('due').value;
+  try {
+    await api('/api/tasks', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, due_date: due || null })
+    });
+    $('title').value = ''; $('due').value = '';
+    await refresh();
+  } catch (error) { showError(error.message); }
+});
+
+const runSecretary = async (dryRun) => {
+  try {
+    $('secretary-result').textContent = 'running…';
+    const result = await api('/api/secretary', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dry_run: dryRun })
+    });
+    $('secretary-result').textContent = JSON.stringify(result, null, 2);
+    await refresh();
+  } catch (error) { showError(error.message); $('secretary-result').textContent = ''; }
+};
+$('run-secretary').addEventListener('click', () => runSecretary(false));
+$('dry-secretary').addEventListener('click', () => runSecretary(true));
+
+refresh();
+</script>
+</body>
+</html>

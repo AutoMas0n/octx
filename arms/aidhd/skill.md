@@ -30,6 +30,7 @@ octx x aidhd secretary [--dry-run] [--notify] [--status] [--json]
 octx x aidhd decisions [--limit <n>] [--json]
 octx x aidhd decisions prune [--before <YYYY-MM-DD>]
 octx x aidhd undo [last|<id>]
+octx x aidhd serve [--port <port>]
 ```
 
 ## Options
@@ -72,6 +73,10 @@ When `add` gets no date from flags or parsing, the arm schedules it deterministi
 - Policy bounds: daily cap 3 open tasks per day, 14-day horizon, quiet hours 22:00–07:00 local. Stuck tasks (overdue 2 days, or rescheduled twice since completion) may be decomposed into at most 5 steps, at most 3 parents per run; a skipped decomposition is retried after 7 days.
 - Configuration: `AIDHD_DAILY_CAP`, `AIDHD_HORIZON_DAYS`, `AIDHD_QUIET_HOURS`, `AIDHD_STUCK_AFTER_DAYS`, `AIDHD_STUCK_AFTER_MOVES`, `AIDHD_MAX_DECOMPOSITIONS`, `AIDHD_SECRETARY_CADENCE`, `AIDHD_AUTO_SCHEDULE`. The same keys live under `[secretary]` in the config file; environment variables win.
 
+### Serve (`serve`)
+- `octx x aidhd serve [--port <port>]` — serve the dashboard and JSON API on loopback only (`127.0.0.1`). Default port 7317. The arm runs as a foreground server; stop it with Ctrl-C. The dashboard is read/write against the same local SQLite store; there is no authentication and no network exposure, so do not bind it to a public interface.
+- API routes: `GET /api/stats`, `/api/tasks`, `/api/next`, `/api/decisions`; `POST /api/tasks`, `POST /api/tasks/{id}/done`, `POST /api/secretary` (accepts `{"dry_run": true}`). Unknown routes and bad bodies return JSON errors.
+
 ### Export
 - `--format <json|csv>` — output format. Required.
 - `--out <path>` — destination file. Required.
@@ -101,6 +106,7 @@ When `add` gets no date from flags or parsing, the arm schedules it deterministi
 - `octx x aidhd voice`
 - `octx x aidhd ask "what should I do first?"`
 - `octx x aidhd suggest <id>`
+- `octx x aidhd serve --port 7317`
 
 ### Scheduling
 Run due notifications from cron or `termux-job-scheduler`. The arm is one-shot, so the scheduler owns the cadence.

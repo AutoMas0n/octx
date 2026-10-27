@@ -121,6 +121,12 @@ pub enum Commands {
     Ask { question: String },
     /// Suggest improvements for a task.
     Suggest { id: String },
+    /// Serve the dashboard and JSON API on loopback only.
+    Serve {
+        /// Port to listen on (bound to 127.0.0.1).
+        #[arg(long, default_value_t = 7317)]
+        port: u16,
+    },
 }
 
 #[derive(Debug, Subcommand)]

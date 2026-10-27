@@ -345,6 +345,7 @@ fn dispatch(
             println!("{answer}");
             Ok(())
         }
+        Commands::Serve { port } => crate::web::serve(port),
         Commands::Suggest { id } => {
             let task = resolve(conn, &id)?;
             let suggestion =
