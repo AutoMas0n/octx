@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use chrono::{Local, NaiveDate, SecondsFormat, Utc};
+use chrono::{Local, NaiveDate, NaiveTime, SecondsFormat, Utc};
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 use thiserror::Error;
 use uuid::Uuid;
@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS tasks (
                       CHECK (priority IN ('high','medium','low')),
     category          TEXT,
     due_date          TEXT,
+    due_time          TEXT,
     recurrence_pattern TEXT
                       CHECK (recurrence_pattern IS NULL OR recurrence_pattern IN ('daily','weekly','monthly')),
     parent_task_id    TEXT REFERENCES tasks(id) ON DELETE CASCADE,
@@ -149,6 +150,7 @@ fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
     let priority: String = row.get("priority")?;
     let recurrence: Option<String> = row.get("recurrence_pattern")?;
     let due: Option<String> = row.get("due_date")?;
+    let due_t: Option<String> = row.get("due_time")?;
     Ok(Task {
         id: row.get("id")?,
         title: row.get("title")?,
@@ -160,6 +162,9 @@ fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
         due_date: due
             .as_deref()
             .and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok()),
+        due_time: due_t
+            .as_deref()
+            .and_then(|t| NaiveTime::parse_from_str(t, "%H:%M:%S").ok()),
         recurrence_pattern: recurrence.as_deref().and_then(Recurrence::from_str),
         parent_task_id: row.get("parent_task_id")?,
         notified_at: row.get("notified_at")?,
@@ -203,8 +208,8 @@ pub fn add_task(conn: &mut Connection, new: &NewTask) -> Result<Task> {
     tx.execute(
         "INSERT INTO tasks (
             id, title, description, notes, status, priority, category,
-            due_date, recurrence_pattern, parent_task_id, pinned, created_at, updated_at
-         ) VALUES (?1, ?2, ?3, ?4, 'pending', ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)",
+            due_date, due_time, recurrence_pattern, parent_task_id, pinned, created_at, updated_at
+         ) VALUES (?1, ?2, ?3, ?4, 'pending', ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
         params![
             id,
             title,
@@ -213,6 +218,7 @@ pub fn add_task(conn: &mut Connection, new: &NewTask) -> Result<Task> {
             new.priority.unwrap_or(Priority::Medium).as_str(),
             new.category,
             new.due_date.map(|d| d.format("%Y-%m-%d").to_string()),
+            new.due_time.map(|t| t.format("%H:%M:%S").to_string()),
             new.recurrence_pattern.map(Recurrence::as_str),
             new.parent_task_id,
             i64::from(new.pinned),
@@ -322,6 +328,11 @@ pub fn update_task(conn: &Connection, id: &str, update: &TaskUpdate) -> Result<T
     if let Some(due_date) = &update.due_date {
         assignments.push("due_date = ?".into());
         values.push(due_date.map(|d| d.format("%Y-%m-%d").to_string()).into());
+        assignments.push("notified_at = NULL".into());
+    }
+    if let Some(due_time) = &update.due_time {
+        assignments.push("due_time = ?".into());
+        values.push(due_time.map(|t| t.format("%H:%M:%S").to_string()).into());
         assignments.push("notified_at = NULL".into());
     }
     if let Some(pinned) = update.pinned {
@@ -599,7 +610,7 @@ pub fn add_decision(conn: &Connection, new: &NewDecision) -> Result<Decision> {
             new.run_id,
         ],
     )?;
-    Ok(get_decision(conn, &id)?)
+    get_decision(conn, &id)
 }
 
 /// Apply a set of reschedules as one all-or-nothing transaction.
@@ -724,7 +735,7 @@ pub fn mark_decision_undone(conn: &Connection, id: &str) -> Result<Decision> {
         get_decision(conn, id)?;
         return Err(DbError::Invalid(format!("decision already undone: {id}")));
     }
-    Ok(get_decision(conn, id)?)
+    get_decision(conn, id)
 }
 
 /// Delete one decision. Refuses when a later decision was undone against it.

@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use chrono::{Duration, NaiveDate};
+use chrono::{Duration, NaiveDate, NaiveTime};
 
 use crate::model::{Status, Task};
 
@@ -38,23 +38,23 @@ pub fn overloaded_days(loads: &BTreeMap<NaiveDate, usize>, daily_cap: usize) -> 
     overloaded
 }
 
-/// Group open tasks by due date, returning only dates with two or more tasks.
+/// Group open tasks by their exact due timestamp, returning only timestamps
+/// shared by two or more tasks.
 ///
-/// Note on semantics: the design speaks of a "same-time collision", but the
-/// store keeps a date and no time of day. Two tasks therefore "collide" when
-/// they share a date. Resolving every such pair would cap each day at one
-/// task, which is more disruptive than the cap the user chose, so collision
-/// resolution is applied through the cap in [`tasks_to_move`] rather than on
-/// its own. A genuine time-of-day collision needs a timestamp field that the
-/// model does not have; adding one is a separate change.
-pub fn collision_groups(tasks: &[Task]) -> BTreeMap<NaiveDate, Vec<&Task>> {
-    let mut groups: BTreeMap<NaiveDate, Vec<&Task>> = BTreeMap::new();
+/// A task's due timestamp is its `due_date` plus its optional `due_time`.
+/// Tasks that name only a date group under `None`, so two undated-time tasks
+/// on the same day collide with each other but never with a task that names a
+/// specific time. That is the "same-time collision" the design describes: a
+/// real clash of moments, not merely a busy day. A busy day is handled by the
+/// daily cap in [`tasks_to_move`].
+pub fn collision_groups(tasks: &[Task]) -> BTreeMap<(NaiveDate, Option<NaiveTime>), Vec<&Task>> {
+    let mut groups: BTreeMap<(NaiveDate, Option<NaiveTime>), Vec<&Task>> = BTreeMap::new();
     for task in tasks {
         if task.status != Status::Pending {
             continue;
         }
         if let Some(due) = task.due_date {
-            groups.entry(due).or_default().push(task);
+            groups.entry((due, task.due_time)).or_default().push(task);
         }
     }
     groups.retain(|_, group| group.len() > 1);
@@ -67,7 +67,7 @@ pub fn collision_groups(tasks: &[Task]) -> BTreeMap<NaiveDate, Vec<&Task>> {
 /// equal priorities keep the earliest created, so the outcome is stable
 /// across runs and never depends on query order. Returns tasks to move,
 /// lowest priority and newest first.
-pub fn tasks_to_move<'a>(tasks: &'a [Task], cap: usize) -> Vec<&'a Task> {
+pub fn tasks_to_move(tasks: &[Task], cap: usize) -> Vec<&Task> {
     let mut movable: Vec<&Task> = tasks
         .iter()
         .filter(|task| task.status == Status::Pending && !task.pinned)
@@ -123,7 +123,7 @@ pub fn next_open_day(
 ///   treated as overdue one-offs;
 /// - non-pending tasks are already closed;
 /// - tasks without a due date are handled by undated fill instead.
-pub fn reschedule_candidates<'a>(tasks: &'a [Task], today: NaiveDate) -> Vec<&'a Task> {
+pub fn reschedule_candidates(tasks: &[Task], today: NaiveDate) -> Vec<&Task> {
     tasks
         .iter()
         .filter(|task| {
@@ -217,6 +217,7 @@ mod tests {
             priority,
             category: None,
             due_date: Some(due),
+            due_time: None,
             recurrence_pattern: None,
             parent_task_id: None,
             notified_at: None,
@@ -412,6 +413,7 @@ mod tests {
             priority: Priority::Medium,
             category: None,
             due_date: due,
+            due_time: None,
             recurrence_pattern: recurrence,
             parent_task_id: None,
             notified_at: None,
@@ -508,12 +510,41 @@ mod tests {
         ];
         let groups = collision_groups(&tasks);
         assert_eq!(groups.len(), 1);
-        assert_eq!(groups.get(&d1).unwrap().len(), 2);
-        assert!(!groups.contains_key(&d2));
+        assert_eq!(groups.get(&(d1, None)).unwrap().len(), 2);
+        assert!(!groups.contains_key(&(d2, None)));
 
         // Completed tasks are not part of a collision.
         tasks[1].status = Status::Completed;
         let groups = collision_groups(&tasks);
         assert!(groups.is_empty());
+    }
+
+    #[test]
+    fn collision_groups_separates_tasks_by_time_of_day() {
+        let d1 = day(2026, 1, 5);
+        let nine = NaiveTime::from_hms_opt(9, 0, 0).unwrap();
+        let ten = NaiveTime::from_hms_opt(10, 0, 0).unwrap();
+        let mut a = task("a", crate::model::Priority::High, "2026-01-01", d1, false);
+        a.due_time = Some(nine);
+        let mut b = task("b", crate::model::Priority::Low, "2026-01-02", d1, false);
+        b.due_time = Some(nine);
+        let mut c = task("c", crate::model::Priority::Medium, "2026-01-03", d1, false);
+        c.due_time = Some(ten);
+        let tasks = vec![a.clone(), b.clone(), c];
+
+        // a and b share 09:00; c is at 10:00 on the same day and must not join.
+        let groups = collision_groups(&tasks);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups.get(&(d1, Some(nine))).unwrap().len(), 2);
+        assert!(!groups.contains_key(&(d1, Some(ten))));
+
+        // A date-only task is its own group: it does not join a timed clash.
+        let mut d = task("d", crate::model::Priority::Medium, "2026-01-04", d1, false);
+        d.due_time = None;
+        let tasks = vec![a, b, d];
+        let groups = collision_groups(&tasks);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups.get(&(d1, Some(nine))).unwrap().len(), 2);
+        assert!(!groups.contains_key(&(d1, None)));
     }
 }

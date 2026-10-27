@@ -1,4 +1,4 @@
-use chrono::{Datelike, NaiveDate};
+use chrono::{Datelike, NaiveDate, NaiveTime};
 use serde::{Deserialize, Serialize};
 
 /// Task lifecycle state.
@@ -133,6 +133,8 @@ pub struct Task {
     pub priority: Priority,
     pub category: Option<String>,
     pub due_date: Option<NaiveDate>,
+    /// Optional time of day; `due_date` + `due_time` is the exact due timestamp.
+    pub due_time: Option<NaiveTime>,
     pub recurrence_pattern: Option<Recurrence>,
     pub parent_task_id: Option<String>,
     pub notified_at: Option<String>,
@@ -155,6 +157,7 @@ pub struct NewTask {
     pub priority: Option<Priority>,
     pub category: Option<String>,
     pub due_date: Option<NaiveDate>,
+    pub due_time: Option<NaiveTime>,
     pub recurrence_pattern: Option<Recurrence>,
     pub parent_task_id: Option<String>,
     pub pinned: bool,
@@ -171,6 +174,7 @@ pub struct TaskUpdate {
     pub priority: Option<Priority>,
     pub category: Option<Option<String>>,
     pub due_date: Option<Option<NaiveDate>>,
+    pub due_time: Option<Option<NaiveTime>>,
     pub pinned: Option<bool>,
     pub decomposed_at: Option<Option<String>>,
 }
