@@ -56,7 +56,12 @@ fn request(port: u16, method: &str, path: &str, body: Option<&str>) -> (u16, Str
     let content_type = head
         .lines()
         .find(|line| line.to_ascii_lowercase().starts_with("content-type:"))
-        .map(|line| line.splitn(2, ':').nth(1).unwrap_or("").trim().to_string())
+        .map(|line| {
+            line.split_once(':')
+                .map_or("", |(_, value)| value)
+                .trim()
+                .to_string()
+        })
         .unwrap_or_default();
     (status, content_type, body.to_string())
 }
@@ -101,13 +106,19 @@ fn read_endpoints_return_json() {
 fn post_task_and_mark_done() {
     let dir = tempfile::tempdir().unwrap();
     let port = start_server(temp_db(dir.path()));
-    let (status, content_type, body) = request(port, "POST", "/api/tasks", Some(r#"{"title":"write tests"}"#));
+    let (status, content_type, body) = request(
+        port,
+        "POST",
+        "/api/tasks",
+        Some(r#"{"title":"write tests"}"#),
+    );
     assert_eq!(status, 201);
     assert!(content_type.contains("application/json"));
     let task: serde_json::Value = serde_json::from_str(&body).unwrap();
     let id = task["id"].as_str().unwrap().to_string();
 
-    let (status, content_type, _body) = request(port, "POST", &format!("/api/tasks/{id}/done"), None);
+    let (status, content_type, _body) =
+        request(port, "POST", &format!("/api/tasks/{id}/done"), None);
     assert_eq!(status, 200);
     assert!(content_type.contains("application/json"));
 
@@ -151,7 +162,8 @@ fn dry_run_secretary_leaves_data_unchanged() {
         db::add_task(&mut conn, &new).unwrap();
     }
     let port = start_server(db_path.clone());
-    let (status, _content_type, body) = request(port, "POST", "/api/secretary", Some(r#"{"dry_run":true}"#));
+    let (status, _content_type, body) =
+        request(port, "POST", "/api/secretary", Some(r#"{"dry_run":true}"#));
     assert_eq!(status, 200);
     let result: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(result["rescheduled"].as_u64().unwrap_or(0), 1);
