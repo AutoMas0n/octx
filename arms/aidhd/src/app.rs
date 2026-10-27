@@ -71,13 +71,19 @@ fn dispatch(
             status,
             category,
             parent,
+            cancelled,
             json,
         } => {
-            let status = match status {
-                Some(value) => Some(
-                    Status::from_str(&value).with_context(|| format!("unknown status: {value}"))?,
-                ),
-                None => Some(Status::Pending),
+            let status = if cancelled {
+                Some(Status::Cancelled)
+            } else {
+                match status {
+                    Some(value) => Some(
+                        Status::from_str(&value)
+                            .with_context(|| format!("unknown status: {value}"))?,
+                    ),
+                    None => Some(Status::Pending),
+                }
             };
             let parent_task_id = parent
                 .map(|prefix| db::find_task_by_prefix(conn, &prefix).map(|task| task.id))
@@ -91,11 +97,26 @@ fn dispatch(
                     ..TaskFilter::default()
                 },
             )?;
+            let counts = db::open_child_counts(conn)?;
             if json {
-                println!("{}", serde_json::to_string_pretty(&tasks)?);
+                let mut items = Vec::with_capacity(tasks.len());
+                for task in &tasks {
+                    let mut value = serde_json::to_value(task)?;
+                    if let Some(object) = value.as_object_mut() {
+                        object.insert(
+                            "step_count".into(),
+                            serde_json::json!(counts.get(&task.id).copied().unwrap_or(0)),
+                        );
+                    }
+                    items.push(value);
+                }
+                println!("{}", serde_json::to_string_pretty(&items)?);
             } else {
                 for task in &tasks {
-                    println!("{}", format_task(task));
+                    println!(
+                        "{}",
+                        format_task(task, counts.get(&task.id).copied().unwrap_or(0))
+                    );
                 }
             }
             Ok(())
@@ -146,7 +167,7 @@ fn dispatch(
         }
         Commands::Search { text } => {
             for task in db::search_tasks(conn, &text)? {
-                println!("{}", format_task(&task));
+                println!("{}", format_task(&task, 0));
             }
             Ok(())
         }
@@ -176,7 +197,7 @@ fn dispatch(
                 notify_due(conn, sink, due, force)
             } else {
                 for task in due {
-                    println!("{}", format_task(&task));
+                    println!("{}", format_task(&task, 0));
                 }
                 Ok(())
             }
@@ -245,7 +266,7 @@ pub fn short_id(id: &str) -> String {
     id.chars().take(8).collect()
 }
 
-fn format_task(task: &Task) -> String {
+fn format_task(task: &Task, step_count: usize) -> String {
     let due = task
         .due_date
         .map(|d| format!(" due={}", d.format("%Y-%m-%d")))
@@ -264,14 +285,20 @@ fn format_task(task: &Task) -> String {
         .as_ref()
         .map(|p| format!(" parent={}", short_id(p)))
         .unwrap_or_default();
+    let steps = if step_count > 0 {
+        format!(" [{step_count} steps]")
+    } else {
+        String::new()
+    };
     format!(
-        "{}  [{}]{}{}{}{}  {}",
+        "{}  [{}]{}{}{}{}{}  {}",
         short_id(&task.id),
         task.priority.as_str(),
         due,
         category,
         recurrence,
         parent,
+        steps,
         task.title
     )
 }

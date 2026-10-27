@@ -498,6 +498,24 @@ pub fn load_by_day(
     Ok(counts)
 }
 
+/// Count open children per parent, for the `[N steps]` list marker.
+pub fn open_child_counts(conn: &Connection) -> Result<BTreeMap<String, usize>> {
+    let mut stmt = conn.prepare(
+        "SELECT parent_task_id, COUNT(*) FROM tasks
+         WHERE status = 'pending' AND parent_task_id IS NOT NULL
+         GROUP BY parent_task_id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })?;
+    let mut counts = BTreeMap::new();
+    for row in rows {
+        let (parent, count) = row?;
+        counts.insert(parent, count as usize);
+    }
+    Ok(counts)
+}
+
 /// Record that the given tasks were notified.
 pub fn mark_notified(conn: &Connection, ids: &[String]) -> Result<()> {
     let timestamp = now();

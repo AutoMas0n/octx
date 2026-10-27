@@ -313,3 +313,47 @@ fn ask_exits_nonzero_and_names_host_when_credential_is_missing() {
     assert!(stderr.contains("octx creds add openrouter"));
     assert!(!stderr.contains("sk-"));
 }
+
+#[test]
+fn decomposed_parent_shows_step_marker_and_json_step_count() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = temp_db(dir.path());
+    let parent = run(&db, &["add", "big job"]);
+    let parent_id = stdout(&parent).trim().to_string();
+    let child = run(&db, &["add", "step one", "--parent", &parent_id]);
+    assert!(child.status.success());
+
+    let list = run(&db, &["list"]);
+    assert!(list.status.success());
+    assert!(stdout(&list).contains("[1 steps]"));
+
+    let json = run(&db, &["list", "--json"]);
+    assert!(json.status.success());
+    assert!(stdout(&json).contains("\"step_count\": 1"));
+}
+
+#[test]
+fn cancelled_filter_lists_cancelled_child() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = temp_db(dir.path());
+    let parent = run(&db, &["add", "parent"]);
+    let parent_id = stdout(&parent).trim().to_string();
+    let child = run(&db, &["add", "child step", "--parent", &parent_id]);
+    let child_id = stdout(&child).trim().to_string();
+
+    let conn = octx_aidhd::db::open(&db).unwrap();
+    let full = octx_aidhd::db::find_task_by_prefix(&conn, &child_id).unwrap();
+    octx_aidhd::db::update_task(
+        &conn,
+        &full.id,
+        &octx_aidhd::model::TaskUpdate {
+            status: Some(octx_aidhd::model::Status::Cancelled),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let list = run(&db, &["list", "--cancelled"]);
+    assert!(list.status.success());
+    assert!(stdout(&list).contains("child step"));
+}

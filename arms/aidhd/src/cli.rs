@@ -36,6 +36,9 @@ pub enum Commands {
         category: Option<String>,
         #[arg(long)]
         parent: Option<String>,
+        /// List cancelled tasks (undone subtasks stay reachable).
+        #[arg(long)]
+        cancelled: bool,
         #[arg(long)]
         json: bool,
     },

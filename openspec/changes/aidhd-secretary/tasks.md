@@ -48,8 +48,8 @@
 - [x] 5a.5 Create subtasks with `parent_task_id`, inherited category/tags/priority, and schedule each within the bounded horizon against running day counts; clear the parent's due date and store the old one in the decision; verify an integration test shows the parent open with a cleared due date and still visible in `list`, the children linked, and the decision details containing the child ids.
 - [x] 5a.6 Implement undo for decomposition: cancel only the child ids listed in the decision's details, leave manually added children untouched, clear `decomposed_at`, keep the parent open; verify a test confirms no deletion and that the parent can be decomposed again.
 - [x] 5a.7 Exclude decomposed parents from daily-cap counting, overdue rescheduling, undated fill, and `next` selection; verify a unit test confirms each exclusion.
-- [ ] 5a.8 Render a `[N steps]` marker for decomposed parents in `list` and a `step_count` field in `list --json`, computed from open children; verify an integration test shows the marker in human output and the field in JSON, and that the marker does not affect scheduling.
-- [ ] 5a.9 Add a `--cancelled` filter to `list` so undone subtasks remain reachable; verify an integration test lists a cancelled child.
+- [x] 5a.8 Render a `[N steps]` marker for decomposed parents in `list` and a `step_count` field in `list --json`, computed from open children; verify an integration test shows the marker in human output and the field in JSON, and that the marker does not affect scheduling.
+- [x] 5a.9 Add a `--cancelled` filter to `list` so undone subtasks remain reachable; verify an integration test lists a cancelled child.
 
 ## 5b. Intelligent auto-scheduling on add
 
