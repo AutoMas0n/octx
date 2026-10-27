@@ -7,8 +7,8 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::model::{
-    Decision, DecisionKind, NewDecision, NewTask, Priority, Recurrence, Run, Stats, Status, Task,
-    TaskFilter, TaskUpdate,
+    Decision, DecisionKind, NewDecision, NewTask, Priority, Recurrence, Reschedule, Run, Stats,
+    Status, Task, TaskFilter, TaskUpdate,
 };
 
 #[derive(Debug, Error)]
@@ -19,6 +19,12 @@ pub enum DbError {
     Sqlite(#[from] rusqlite::Error),
     #[error("invalid stored value: {0}")]
     Invalid(String),
+    #[error("stale due date for task {task_id}: expected {expected}, found {actual}")]
+    Conflict {
+        task_id: String,
+        expected: String,
+        actual: String,
+    },
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -594,6 +600,77 @@ pub fn add_decision(conn: &Connection, new: &NewDecision) -> Result<Decision> {
         ],
     )?;
     Ok(get_decision(conn, &id)?)
+}
+
+/// Apply a set of reschedules as one all-or-nothing transaction.
+///
+/// Each item moves the task's due date and records a matching decision row.
+/// The write is refused when the stored due date no longer matches the date
+/// the policy observed, so a manual edit made during a run is never silently
+/// overwritten. Any failure aborts the whole batch: partial reschedules would
+/// leave day counts inconsistent with the decision log, so the pass either
+/// lands entirely or not at all. Returns the number of reschedules applied.
+pub fn apply_reschedules(
+    conn: &mut Connection,
+    items: &[Reschedule],
+    run_id: &str,
+) -> Result<usize> {
+    let tx = conn.transaction()?;
+    let timestamp = now();
+    for item in items {
+        // Outer option marks a missing row; inner marks a NULL due date.
+        let found: Option<Option<String>> = tx
+            .query_row(
+                "SELECT due_date FROM tasks WHERE id = ?1",
+                params![item.task_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let current = found.ok_or_else(|| DbError::NotFound(item.task_id.clone()))?;
+        let expected = item.from.format("%Y-%m-%d").to_string();
+        match current {
+            Some(stored) if stored == expected => {}
+            Some(stored) => {
+                return Err(DbError::Conflict {
+                    task_id: item.task_id.clone(),
+                    expected,
+                    actual: stored,
+                });
+            }
+            None => {
+                return Err(DbError::Conflict {
+                    task_id: item.task_id.clone(),
+                    expected,
+                    actual: "none".into(),
+                });
+            }
+        }
+        tx.execute(
+            "UPDATE tasks SET due_date = ?2, updated_at = ?3 WHERE id = ?1",
+            params![
+                item.task_id,
+                item.to.format("%Y-%m-%d").to_string(),
+                timestamp,
+            ],
+        )?;
+        tx.execute(
+            "INSERT INTO decisions (
+                id, task_id, kind, old_due_date, new_due_date, reason, details,
+                created_at, undone_at, run_id
+             ) VALUES (?1, ?2, 'rescheduled', ?3, ?4, ?5, NULL, ?6, NULL, ?7)",
+            params![
+                Uuid::new_v4().to_string(),
+                item.task_id,
+                expected,
+                item.to.format("%Y-%m-%d").to_string(),
+                item.reason,
+                timestamp,
+                run_id,
+            ],
+        )?;
+    }
+    tx.commit()?;
+    Ok(items.len())
 }
 
 /// Fetch one decision by id.
@@ -1202,5 +1279,102 @@ mod tests {
         )
         .unwrap();
         assert!(get_task(&conn, &task.id).unwrap().notified_at.is_none());
+    }
+
+    #[test]
+    fn apply_reschedules_moves_tasks_and_logs_decisions() {
+        let mut conn = open_in_memory().unwrap();
+        let base = NaiveDate::from_ymd_opt(2026, 1, 5).unwrap();
+        let task = add_task(
+            &mut conn,
+            &NewTask {
+                title: "move me".into(),
+                due_date: Some(base),
+                ..NewTask::default()
+            },
+        )
+        .unwrap();
+        let run_id = start_run(&conn).unwrap();
+        let items = [Reschedule {
+            task_id: task.id.clone(),
+            from: base,
+            to: NaiveDate::from_ymd_opt(2026, 1, 9).unwrap(),
+            reason: "overdue".into(),
+        }];
+        let applied = apply_reschedules(&mut conn, &items, &run_id).unwrap();
+        assert_eq!(applied, 1);
+        let moved = get_task(&conn, &task.id).unwrap();
+        assert_eq!(moved.due_date, NaiveDate::from_ymd_opt(2026, 1, 9));
+        let decisions = list_decisions(&conn, Some(&task.id), None, None).unwrap();
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].kind, DecisionKind::Rescheduled);
+        assert_eq!(
+            decisions[0].new_due_date,
+            NaiveDate::from_ymd_opt(2026, 1, 9)
+        );
+    }
+
+    #[test]
+    fn apply_reschedules_rolls_back_the_whole_batch_on_failure() {
+        let mut conn = open_in_memory().unwrap();
+        let base = NaiveDate::from_ymd_opt(2026, 1, 5).unwrap();
+        let first = add_task(
+            &mut conn,
+            &NewTask {
+                title: "first".into(),
+                due_date: Some(base),
+                ..NewTask::default()
+            },
+        )
+        .unwrap();
+        let second = add_task(
+            &mut conn,
+            &NewTask {
+                title: "second".into(),
+                due_date: Some(base),
+                ..NewTask::default()
+            },
+        )
+        .unwrap();
+        let run_id = start_run(&conn).unwrap();
+
+        // The second item is stale: its stored due date is base, not Jan 4.
+        let items = [
+            Reschedule {
+                task_id: first.id.clone(),
+                from: base,
+                to: NaiveDate::from_ymd_opt(2026, 1, 9).unwrap(),
+                reason: "overdue".into(),
+            },
+            Reschedule {
+                task_id: second.id.clone(),
+                from: NaiveDate::from_ymd_opt(2026, 1, 4).unwrap(),
+                to: NaiveDate::from_ymd_opt(2026, 1, 10).unwrap(),
+                reason: "overdue".into(),
+            },
+        ];
+        let error = apply_reschedules(&mut conn, &items, &run_id).unwrap_err();
+        assert!(matches!(error, DbError::Conflict { .. }));
+
+        // The first task must NOT have moved, and no decision may be logged.
+        assert_eq!(get_task(&conn, &first.id).unwrap().due_date, Some(base));
+        assert_eq!(get_task(&conn, &second.id).unwrap().due_date, Some(base));
+        assert!(list_decisions(&conn, None, None, None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn apply_reschedules_refuses_unknown_task() {
+        let mut conn = open_in_memory().unwrap();
+        let run_id = start_run(&conn).unwrap();
+        let items = [Reschedule {
+            task_id: "missing".into(),
+            from: NaiveDate::from_ymd_opt(2026, 1, 4).unwrap(),
+            to: NaiveDate::from_ymd_opt(2026, 1, 10).unwrap(),
+            reason: "overdue".into(),
+        }];
+        assert!(matches!(
+            apply_reschedules(&mut conn, &items, &run_id),
+            Err(DbError::NotFound(_))
+        ));
     }
 }

@@ -262,6 +262,20 @@ pub struct NewDecision {
     pub run_id: String,
 }
 
+/// A reschedule the policy layer proposes for one task.
+///
+/// Carried separately from [`NewDecision`] because applying one has to both
+/// move the task and write the log row in the same transaction. `from` is the
+/// due date the policy observed; the write is refused when the stored date no
+/// longer matches, so a manual edit made mid-run is never silently clobbered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reschedule {
+    pub task_id: String,
+    pub from: NaiveDate,
+    pub to: NaiveDate,
+    pub reason: String,
+}
+
 /// A single secretary pass.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Run {
