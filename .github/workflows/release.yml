@@ -64,15 +64,9 @@ jobs:
               echo "CARGO_TARGET_ARM_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc" >> "$GITHUB_ENV"
               ;;
             aarch64-unknown-linux-musl)
-              # Ubuntu ships no aarch64-musl C toolchain, and the glibc cross
-              # gcc cannot build C dependencies (libsqlite3-sys) for a static
-              # musl binary. Fetch the musl.cc cross toolchain instead.
-              curl -fsSL https://musl.cc/aarch64-linux-musl-cross.tgz \
-                | sudo tar xz -C /opt
-              MUSL=/opt/aarch64-linux-musl-cross/bin
-              echo "CC_aarch64_unknown_linux_musl=$MUSL/aarch64-linux-musl-gcc" >> "$GITHUB_ENV"
-              echo "AR_aarch64_unknown_linux_musl=$MUSL/aarch64-linux-musl-ar" >> "$GITHUB_ENV"
-              echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=$MUSL/aarch64-linux-musl-gcc" >> "$GITHUB_ENV"
+              # Ubuntu ships no aarch64-musl C toolchain and the glibc cross
+              # gcc cannot compile the bundled SQLite C sources, so this target
+              # is built by `cross` below, which uses an image that has one.
               ;;
             *-linux-android*)
               # Android links bionic, not musl: a musl-static binary cannot
@@ -100,12 +94,21 @@ jobs:
               echo "CARGO_TARGET_${VAR_UPPER}_LINKER=${BIN}/${CLANG_TRIPLE}-clang" >> "$GITHUB_ENV"
               ;;
           esac
+      - name: Install cross
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
       - name: Build head
-        run: cargo build --target ${{ matrix.target }} --release
+        env:
+          BUILDER: ${{ matrix.target == 'aarch64-unknown-linux-musl' && 'cross' || 'cargo' }}
+        run: $BUILDER build --target ${{ matrix.target }} --release
       - name: Build arms
+        env:
+          BUILDER: ${{ matrix.target == 'aarch64-unknown-linux-musl' && 'cross' || 'cargo' }}
         run: |
           for arm in octx-fmt octx-parse octx-deploy octx-agent octx-harness octx-jam octx-aidhd; do
-            cargo build -p "$arm" --target ${{ matrix.target }} --release
+            $BUILDER build -p "$arm" --target ${{ matrix.target }} --release
           done
       - name: Prepare artifacts
         run: |
