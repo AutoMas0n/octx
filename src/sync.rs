@@ -62,8 +62,8 @@ pub(crate) async fn sync_locked(force: bool) -> Result<(), OctxError> {
 /// cached ETag. Returns `None` on `304 Not Modified`. When `force` is true the
 /// conditional header is omitted, so the server always returns the body.
 ///
-/// `install::fetch` cannot be reused here: it errors on 304 because it has no
-/// access to the cached body.
+/// `install::fetch` now caches bodies too, but this keeps its own transport
+/// because it needs `force` to bypass the cached ETag entirely.
 async fn fetch_archive(
     url: &str,
     etag_path: &Path,

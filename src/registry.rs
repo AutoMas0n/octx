@@ -86,10 +86,38 @@ impl RegistryIndex {
         let status = response.status();
 
         if status == reqwest::StatusCode::NOT_MODIFIED {
-            // 304: read from cache
-            let data = fs::read_to_string(&cache_path)?;
-            let index: RegistryIndex = serde_json::from_str(&data)?;
-            return Ok((index, true));
+            // 304: serve the cached body. If an older octx wrote the ETag
+            // without a body, repeat the request unconditionally instead of
+            // failing: upgrading must not block the next install.
+            if let Ok(data) = fs::read_to_string(&cache_path)
+                && let Ok(index) = serde_json::from_str(&data)
+            {
+                return Ok((index, true));
+            }
+            let response = client.get(&url).send().await?;
+            if !response.status().is_success() {
+                return Err(OctxError::Http(format!(
+                    "registry fetch returned {}",
+                    response.status()
+                )));
+            }
+            let new_etag = response
+                .headers()
+                .get("etag")
+                .and_then(|v| v.to_str().ok().map(|s| s.trim().to_string()));
+            let body = response.text().await?;
+            let index: RegistryIndex = serde_json::from_str(&body)?;
+            if let Some(parent) = cache_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(&cache_path, &body)?;
+            match new_etag {
+                Some(etag_val) => fs::write(&etag_path, etag_val)?,
+                None => {
+                    let _ = fs::remove_file(&etag_path);
+                }
+            }
+            return Ok((index, false));
         }
 
         if !status.is_success() {

@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use reqwest::Client;
+use reqwest::{Client, Response, StatusCode};
 
 use crate::OctxError;
 use crate::manifest::{ArmEntry, Manifest};
@@ -154,55 +154,85 @@ pub fn parse_remote_url(url: &str) -> Result<(String, String, String), OctxError
     ))
 }
 
+/// Path of the cached body that belongs to an ETag file.
+///
+/// `aidhd.etag` -> `aidhd.cache`, `aidhd.skill.etag` -> `aidhd.skill.cache`.
+fn cache_path_for(etag_path: &Path) -> std::path::PathBuf {
+    etag_path.with_extension("cache")
+}
+
 /// Download bytes from a URL with optional Authorization header and ETag caching.
 /// Returns (bytes, was_cached).
+///
+/// The body is cached next to the ETag, so a `304 Not Modified` is served from
+/// disk instead of failing. An ETag left behind by an older version has no body
+/// beside it, so the request is repeated unconditionally rather than erroring:
+/// upgrading octx must never break the first install.
 pub async fn fetch(url: &str, etag_path: &Path) -> Result<(Vec<u8>, bool), OctxError> {
     let client = Client::builder().user_agent("octx/0.1.0").build()?;
+    let cache_path = cache_path_for(etag_path);
 
-    // Read cached ETag
-    let etag = fs::read_to_string(etag_path)
+    let cached_etag = fs::read_to_string(etag_path)
         .ok()
         .map(|s| s.trim().to_string());
 
-    let mut request = client.get(url);
-    if let Some(ref etag_val) = etag {
-        request = request.header("If-None-Match", etag_val);
+    if let Some(ref etag_val) = cached_etag {
+        let response = client
+            .get(url)
+            .header("If-None-Match", etag_val)
+            .send()
+            .await?;
+
+        if response.status() == StatusCode::NOT_MODIFIED {
+            if let Ok(bytes) = fs::read(&cache_path) {
+                return Ok((bytes, true));
+            }
+            // No cached body (ETag written by an older octx): fall through to an
+            // unconditional request.
+        } else {
+            return store_response(response, url, etag_path, &cache_path).await;
+        }
     }
 
-    let response = request.send().await?;
+    let response = client.get(url).send().await?;
+    store_response(response, url, etag_path, &cache_path).await
+}
+
+/// Persist a successful response body and its ETag, atomically for the body so
+/// a crash cannot leave a half-written cache that a later 304 would serve.
+async fn store_response(
+    response: Response,
+    url: &str,
+    etag_path: &Path,
+    cache_path: &Path,
+) -> Result<(Vec<u8>, bool), OctxError> {
     let status = response.status();
-
-    if status == reqwest::StatusCode::NOT_MODIFIED {
-        // 304: read from cache — but we don't know where cache is for arbitrary fetch.
-        // For registry fetches, calling code handles caching. For binary/skill fetches,
-        // there's no separate cached body, so return empty.
-        return Err(OctxError::Http(
-            "304 Not Modified with no local cache".into(),
-        ));
-    }
-
     if !status.is_success() {
         return Err(OctxError::Http(format!(
             "fetch returned {status} for {url}"
         )));
     }
 
-    // Capture ETag from response headers
     let new_etag = response
         .headers()
         .get("etag")
         .and_then(|v| v.to_str().ok().map(|s| s.trim().to_string()));
+    let bytes = response.bytes().await?.to_vec();
 
-    // Read body
-    let body = response.bytes().await?;
-    let bytes = body.to_vec();
+    if let Some(parent) = cache_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let tmp = cache_path.with_extension("cache.tmp");
+    fs::write(&tmp, &bytes)?;
+    fs::rename(&tmp, cache_path)?;
 
-    // Save ETag
-    if let Some(ref etag_val) = new_etag {
-        if let Some(parent) = etag_path.parent() {
-            fs::create_dir_all(parent)?;
+    match new_etag {
+        Some(etag_val) => fs::write(etag_path, etag_val)?,
+        // Without an ETag the next request must be unconditional, or a stale
+        // ETag would keep asking the server for a body we can no longer match.
+        None => {
+            let _ = fs::remove_file(etag_path);
         }
-        fs::write(etag_path, etag_val)?;
     }
 
     Ok((bytes, false))
@@ -267,6 +297,118 @@ mod tests {
         });
 
         format!("http://{addr}/skill.md")
+    }
+
+    /// Serve a sequence of canned HTTP responses, one per connection, and
+    /// return the requests received. Lets a test answer `200`, then `304`.
+    fn serve_responses(
+        responses: Vec<(&'static str, &'static str, Vec<u8>)>,
+    ) -> (String, std::thread::JoinHandle<Vec<String>>) {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback port");
+        let addr = listener.local_addr().expect("read local addr");
+
+        let handle = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            for (status, headers, body) in responses {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    break;
+                };
+                let mut buf = [0u8; 8192];
+                let read = stream.read(&mut buf).unwrap_or(0);
+                requests.push(String::from_utf8_lossy(&buf[..read]).to_string());
+
+                let head = format!(
+                    "HTTP/1.1 {status}\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.write_all(&body);
+            }
+            requests
+        });
+
+        (format!("http://{addr}/bin"), handle)
+    }
+
+    /// A data dir the test owns, without touching the real one.
+    fn test_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "octx-fetch-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[tokio::test]
+    async fn fetch_serves_a_cached_body_after_not_modified() {
+        let dir = test_dir("cached");
+        let etag_path = dir.join("thing.etag");
+        let (url, server) = serve_responses(vec![
+            ("200 OK", "ETag: \"v1\"\r\n", b"payload".to_vec()),
+            ("304 Not Modified", "", Vec::new()),
+        ]);
+
+        let (bytes, cached) = fetch(&url, &etag_path).await.unwrap();
+        assert_eq!(bytes, b"payload");
+        assert!(!cached, "first fetch is not cached");
+        assert_eq!(fs::read_to_string(&etag_path).unwrap(), "\"v1\"");
+
+        // Second fetch must succeed from the cached body, not error.
+        let (bytes, cached) = fetch(&url, &etag_path).await.unwrap();
+        assert_eq!(bytes, b"payload");
+        assert!(cached, "304 must be served from the cached body");
+
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(
+            requests[1].to_lowercase().contains("if-none-match: \"v1\""),
+            "the conditional header should be sent: {}",
+            requests[1]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn fetch_refetches_when_the_etag_has_no_cached_body() {
+        // Reproduces an upgrade from a version that wrote only the ETag.
+        let dir = test_dir("no-cache");
+        let etag_path = dir.join("thing.etag");
+        fs::write(&etag_path, "\"stale\"").unwrap();
+
+        let (url, server) = serve_responses(vec![
+            ("304 Not Modified", "", Vec::new()),
+            ("200 OK", "ETag: \"v2\"\r\n", b"fresh".to_vec()),
+        ]);
+
+        let (bytes, cached) = fetch(&url, &etag_path).await.unwrap();
+        assert_eq!(bytes, b"fresh", "must repeat the request unconditionally");
+        assert!(!cached);
+        assert_eq!(fs::read_to_string(&etag_path).unwrap(), "\"v2\"");
+        assert_eq!(server.join().unwrap().len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn fetch_drops_a_stale_etag_when_the_server_stops_sending_one() {
+        let dir = test_dir("no-etag");
+        let etag_path = dir.join("thing.etag");
+        fs::write(&etag_path, "\"stale\"").unwrap();
+
+        let (url, server) = serve_responses(vec![("200 OK", "", b"body".to_vec())]);
+
+        let (bytes, _) = fetch(&url, &etag_path).await.unwrap();
+        assert_eq!(bytes, b"body");
+        assert!(
+            !etag_path.exists(),
+            "a response without an ETag must clear the stale one"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        server.join().unwrap();
     }
 
     #[tokio::test]
