@@ -1,4 +1,5 @@
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use thiserror::Error;
 
@@ -10,6 +11,10 @@ pub enum SinkError {
     CommandFailed(String),
     #[error("voice input is not configured on this platform")]
     VoiceUnavailable,
+    #[error("no speech detected")]
+    NoSpeech,
+    #[error("voice capture timed out after {0}s")]
+    Timeout(u64),
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -142,15 +147,31 @@ fn termux_cue(cue: Cue) -> Result<()> {
         .arg("play")
         .arg(&path)
         .status();
-    // Let the short chime finish before the process exits or the mic opens,
-    // so the cue is neither clipped nor captured as speech.
-    std::thread::sleep(std::time::Duration::from_millis(CUE_TOTAL_MS));
+    // Never open the microphone while the chime is still sounding: it would
+    // record the cue itself. Wait for the player to report that it stopped,
+    // with a hard cap so a stuck player cannot delay capture forever.
+    wait_for_playback();
     let _ = std::fs::remove_file(&path);
     Ok(())
 }
 
-/// Two notes plus the gap between them, rounded up a little.
-const CUE_TOTAL_MS: u64 = (CUE_NOTE_MS * 2 + CUE_GAP_MS + 40) as u64;
+/// Poll the media player until it stops playing, capped at two seconds.
+fn wait_for_playback() {
+    let deadline = Instant::now() + Duration::from_millis(2_000);
+    // Give `play` a moment to actually start before trusting an idle report.
+    std::thread::sleep(Duration::from_millis(60));
+    loop {
+        let playing = Command::new("termux-media-player")
+            .arg("info")
+            .output()
+            .map(|output| String::from_utf8_lossy(&output.stdout).contains("Status: Playing"))
+            .unwrap_or(false);
+        if !playing || Instant::now() >= deadline {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
 
 const CUE_SAMPLE_RATE: u32 = 22_050;
 const CUE_NOTE_MS: u32 = 70;
@@ -199,12 +220,65 @@ fn cue_wav(cue: Cue) -> Vec<u8> {
     wav
 }
 
+/// Android's recognizer ends the utterance itself when it hears silence, so
+/// there is deliberately no fixed capture window. The timeout only guards a
+/// stuck recognizer; it is not the listening duration.
 fn termux_listen() -> Result<String> {
-    let output = Command::new("termux-speech-to-text").output()?;
-    if !output.status.success() {
-        return Err(SinkError::CommandFailed("termux-speech-to-text".into()));
+    capture(
+        "termux-speech-to-text",
+        Command::new("termux-speech-to-text"),
+        listen_timeout(),
+    )
+}
+
+/// Resolve the capture safety cap from `AIDHD_LISTEN_TIMEOUT` (seconds).
+fn listen_timeout() -> Duration {
+    listen_timeout_from(std::env::var("AIDHD_LISTEN_TIMEOUT").ok().as_deref())
+}
+
+fn listen_timeout_from(value: Option<&str>) -> Duration {
+    let seconds = value
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(30)
+        .clamp(3, 300);
+    Duration::from_secs(seconds)
+}
+
+/// Run a recognizer, returning its transcript or an explicit no-speech/timeout
+/// error. Empty output is never a valid task title.
+fn capture(label: &str, mut command: Command, timeout: Duration) -> Result<String> {
+    use std::io::Read;
+
+    let mut child = command
+        .stdout(Stdio::piped())
+        .spawn()
+        .map_err(|_| SinkError::Unavailable(label.to_string()))?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait()? {
+            Some(status) => {
+                let mut text = String::new();
+                if let Some(mut stdout) = child.stdout.take() {
+                    stdout.read_to_string(&mut text)?;
+                }
+                if !status.success() {
+                    return Err(SinkError::CommandFailed(label.to_string()));
+                }
+                let text = text.trim().to_string();
+                return if text.is_empty() {
+                    Err(SinkError::NoSpeech)
+                } else {
+                    Ok(text)
+                };
+            }
+            None if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(SinkError::Timeout(timeout.as_secs()));
+            }
+            None => std::thread::sleep(Duration::from_millis(25)),
+        }
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 fn linux_notify(title: &str, body: &str) -> Result<()> {
@@ -217,11 +291,9 @@ fn linux_speak(text: &str) -> Result<()> {
 
 fn linux_listen() -> Result<String> {
     if let Ok(command) = std::env::var("AIDHD_LISTEN_CMD") {
-        let output = Command::new("sh").arg("-c").arg(&command).output()?;
-        if !output.status.success() {
-            return Err(SinkError::CommandFailed(command));
-        }
-        return Ok(String::from_utf8_lossy(&output.stdout).trim().to_string());
+        let mut shell = Command::new("sh");
+        shell.arg("-c").arg(&command);
+        return capture(&command, shell, listen_timeout());
     }
     Err(SinkError::VoiceUnavailable)
 }
@@ -281,6 +353,46 @@ mod tests {
         }
         termux_cue(Cue::Start).unwrap();
         termux_cue(Cue::Stop).unwrap();
+    }
+
+    #[test]
+    fn capture_timeout_defaults_and_clamps() {
+        assert_eq!(listen_timeout_from(None), Duration::from_secs(30));
+        assert_eq!(listen_timeout_from(Some("10")), Duration::from_secs(10));
+        assert_eq!(listen_timeout_from(Some(" 45 ")), Duration::from_secs(45));
+        assert_eq!(listen_timeout_from(Some("1")), Duration::from_secs(3));
+        assert_eq!(listen_timeout_from(Some("9999")), Duration::from_secs(300));
+        assert_eq!(
+            listen_timeout_from(Some("nonsense")),
+            Duration::from_secs(30)
+        );
+    }
+
+    #[test]
+    fn capture_distinguishes_silence_from_a_transcript() {
+        let mut silent = Command::new("sh");
+        silent.args(["-c", "true"]);
+        assert!(matches!(
+            capture("true", silent, Duration::from_secs(5)),
+            Err(SinkError::NoSpeech)
+        ));
+
+        let mut spoken = Command::new("sh");
+        spoken.args(["-c", "printf 'buy milk\n'"]);
+        assert_eq!(
+            capture("printf", spoken, Duration::from_secs(5)).unwrap(),
+            "buy milk"
+        );
+    }
+
+    #[test]
+    fn capture_kills_a_stuck_recognizer() {
+        let mut stuck = Command::new("sh");
+        stuck.args(["-c", "sleep 5"]);
+        let started = Instant::now();
+        let result = capture("sleep", stuck, Duration::from_millis(200));
+        assert!(matches!(result, Err(SinkError::Timeout(0))));
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[test]

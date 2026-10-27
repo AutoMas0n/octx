@@ -82,7 +82,7 @@ When `add` gets no date from flags or parsing, the arm schedules it deterministi
 - `suggest <id>` — suggest priority, category, or tags for one task. Falls back to deterministic output when no LLM is available.
 
 ### Voice
-- `voice` — capture one utterance, transcribe it, parse the transcript with the same parser as text, save without a confirmation prompt, and speak a short confirmation. Plays a short rising two-tone chime before the mic opens ("speak now") and a falling one when capture ends. No continuous listening and no wake word.
+- `voice` — capture one utterance, transcribe it, parse the transcript with the same parser as text, save without a confirmation prompt, and speak a short confirmation. Plays a short rising two-tone chime before the mic opens ("speak now") and a falling one when capture ends. The microphone stays open for as long as you are speaking: the recognizer ends the utterance on silence, so there is no fixed recording window and no push-to-talk. A safety cap (30 s by default, `AIDHD_LISTEN_TIMEOUT`) only exists so a stuck recognizer cannot hang the command. No continuous listening and no wake word.
 
 ## Examples
 ### Core commands
@@ -193,6 +193,8 @@ AIDHD_AI_PROVIDER=openai AIDHD_AI_MODEL=gpt-4o-mini octx x aidhd ask "what shoul
 - **The arm database cannot be opened or written** — exits non-zero naming the path; text commands remain usable once the path is writable.
 - **A concurrent writer holds the lock longer than `busy_timeout`** — exits non-zero with a database-busy message; retrying the command is safe.
 - **`voice` when the platform sink cannot capture audio** — exits `1` with a clear message; text commands remain usable.
+- **`voice` captures no speech** (silence, or the recognizer returns nothing) — exits `1` with `no speech detected; nothing saved`.
+- **`voice` hits the capture safety cap** (a stuck recognizer) — exits `1` with the timeout, kills the recognizer, and saves nothing.
 - **The voice transcript cannot be parsed into a task** — exits non-zero; nothing is saved and no confirmation is spoken.
 - **The capture cue cannot be played** (no `termux-media-player`, or playback fails) — silence only; the microphone still opens and the command behaves normally.
 - **The TTS confirmation fails after a successful save** — logs to stderr and exits `0`; the task is already stored.

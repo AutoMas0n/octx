@@ -12,7 +12,7 @@ use crate::export;
 use crate::llm::{LlmClient, LlmError};
 use crate::model::{NewTask, Priority, Recurrence, Status, Task, TaskFilter, TaskUpdate};
 use crate::secretary;
-use crate::sink::{Cue, PlatformSink, Sink};
+use crate::sink::{Cue, PlatformSink, Sink, SinkError};
 
 pub fn run(cli: Cli) -> anyhow::Result<()> {
     let path = db::default_db_path()?;
@@ -796,7 +796,13 @@ fn voice(conn: &mut Connection, sink: &dyn Sink) -> anyhow::Result<()> {
     let _ = sink.cue(Cue::Start);
     let captured = sink.listen();
     let _ = sink.cue(Cue::Stop);
-    let transcript = captured.map_err(|e| anyhow::anyhow!("voice unavailable: {e}"))?;
+    let transcript = captured.map_err(|e| match e {
+        SinkError::NoSpeech => anyhow::anyhow!("no speech detected; nothing saved"),
+        SinkError::Timeout(seconds) => {
+            anyhow::anyhow!("no speech within {seconds}s; nothing saved")
+        }
+        other => anyhow::anyhow!("voice unavailable: {other}"),
+    })?;
     eprintln!("transcript: {transcript}");
     let parsed = deterministic_parse(&transcript);
     if parsed.title.is_empty() {
