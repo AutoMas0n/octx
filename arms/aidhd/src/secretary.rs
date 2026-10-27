@@ -53,9 +53,12 @@ pub fn collision_groups(tasks: &[Task]) -> BTreeMap<(NaiveDate, Option<NaiveTime
         if task.status != Status::Pending {
             continue;
         }
-        if let Some(due) = task.due_date {
-            groups.entry((due, task.due_time)).or_default().push(task);
-        }
+        // A collision needs an actual time of day. Two tasks merely sharing a
+        // date are not simultaneous; daily-cap overload handling covers them.
+        let (Some(due), Some(time)) = (task.due_date, task.due_time) else {
+            continue;
+        };
+        groups.entry((due, Some(time))).or_default().push(task);
     }
     groups.retain(|_, group| group.len() > 1);
     groups
@@ -925,10 +928,16 @@ mod tests {
             task("b", crate::model::Priority::Low, "2026-01-02", d1, false),
             task("c", crate::model::Priority::Medium, "2026-01-03", d2, false),
         ];
+        // Date-only tasks are not simultaneous, so they are not collisions.
+        assert!(collision_groups(&tasks).is_empty());
+
+        // With a shared time they do collide.
+        let nine = NaiveTime::from_hms_opt(9, 0, 0).unwrap();
+        tasks[0].due_time = Some(nine);
+        tasks[1].due_time = Some(nine);
         let groups = collision_groups(&tasks);
         assert_eq!(groups.len(), 1);
-        assert_eq!(groups.get(&(d1, None)).unwrap().len(), 2);
-        assert!(!groups.contains_key(&(d2, None)));
+        assert_eq!(groups.get(&(d1, Some(nine))).unwrap().len(), 2);
 
         // Completed tasks are not part of a collision.
         tasks[1].status = Status::Completed;

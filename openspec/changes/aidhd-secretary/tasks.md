@@ -62,18 +62,18 @@
 
 ## 6. Skill and scheduling
 
-- [ ] 6.1 Document `secretary`, `decisions`, `undo`, `pin`, and `unpin` in `skill.md`; verify the text appears in the `Usage` and `Options` sections.
-- [ ] 6.2 Add cron and `termux-job-scheduler` examples for the secretary pass and the health check; verify the commands run as written against a temporary store.
-- [ ] 6.3 Document the daily cap, quiet-hours defaults, configured horizon (default 14 days), decomposition thresholds, and configuration variables; verify each value appears in the `Options` or `Prerequisites` section.
-- [ ] 6.4 Document how to inspect and undo decisions and how to detect a dead scheduler; verify the health-check example runs as written.
+- [x] 6.1 Document `secretary`, `decisions`, `undo`, `pin`, and `unpin` in `skill.md`; verify the text appears in the `Usage` and `Options` sections.
+- [x] 6.2 Add cron and `termux-job-scheduler` examples for the secretary pass and the health check; verify the commands run as written against a temporary store.
+- [x] 6.3 Document the daily cap, quiet-hours defaults, configured horizon (default 14 days), decomposition thresholds, and configuration variables; verify each value appears in the `Options` or `Prerequisites` section.
+- [x] 6.4 Document how to inspect and undo decisions and how to detect a dead scheduler; verify the health-check example runs as written.
 
 ## 7. Integration checks
 
-- [ ] 7.1 Run `cargo fmt --all --check` and verify no diff.
-- [ ] 7.2 Run `cargo clippy --all-targets -- -D warnings` and verify a clean result.
-- [ ] 7.3 Run `cargo test -p octx-aidhd` and verify all unit and integration tests pass.
-- [ ] 7.4 Run `cargo test --test skill_conformance` and verify the arm skill passes.
-- [ ] 7.5 Run `cargo build -p octx-aidhd --release` and verify the binary and `skill.md` are present in the expected locations.
+- [x] 7.1 Run `cargo fmt --all --check` and verify no diff.
+- [x] 7.2 Run `cargo clippy --all-targets -- -D warnings` and verify a clean result.
+- [x] 7.3 Run `cargo test -p octx-aidhd` and verify all unit and integration tests pass.
+- [x] 7.4 Run `cargo test --test skill_conformance` and verify the arm skill passes.
+- [x] 7.5 Run `cargo build -p octx-aidhd --release` and verify the binary and `skill.md` are present in the expected locations.
 
 ## Workflow follow-up
 
