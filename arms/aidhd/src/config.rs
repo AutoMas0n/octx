@@ -153,9 +153,9 @@ impl Default for SecretaryConfig {
             daily_cap: 3,
             horizon_days: 14,
             quiet_hours: (22, 7),
-            stuck_after_days: 7,
-            stuck_after_moves: 3,
-            max_decompositions: 2,
+            stuck_after_days: 2,
+            stuck_after_moves: 2,
+            max_decompositions: 3,
             cadence: "daily".into(),
             auto_schedule: true,
         }

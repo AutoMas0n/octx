@@ -4,7 +4,7 @@
 //! and returns proposed decisions. Nothing here touches the database or the
 //! network, so every rule is unit-testable without fixtures or mocks.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{Duration, NaiveDate, NaiveTime};
 
@@ -133,6 +133,97 @@ pub fn reschedule_candidates(tasks: &[Task], today: NaiveDate) -> Vec<&Task> {
                 && task.due_date.is_some_and(|due| due < today)
         })
         .collect()
+}
+
+/// A task the secretary may break into subtasks.
+///
+/// A task is stuck when it is still open, the user has not pinned it, it is
+/// not itself a step, it has not already been broken down, and nothing else
+/// is waiting on it as a parent. Recurring tasks are excluded because their
+/// overdue state belongs to the recurrence path, not to decomposition.
+///
+/// At least one trigger must hold:
+/// - the due date is more than `stuck_after_days` days in the past;
+/// - there is no due date and the task is older than `stuck_after_days`;
+/// - it has been rescheduled `stuck_after_moves` or more times since it was
+///   last completed. `reschedule_counts` supplies that count per task so the
+///   policy stays pure; the caller derives it from the decision log.
+///
+/// Results are ordered longest-neglected first, then by priority, so a capped
+/// run always picks the tasks most in need of breaking down.
+pub fn stuck_candidates<'a>(
+    tasks: &'a [Task],
+    reschedule_counts: &BTreeMap<String, usize>,
+    today: NaiveDate,
+    stuck_after_days: i64,
+    stuck_after_moves: usize,
+) -> Vec<&'a Task> {
+    let parents_with_children: BTreeSet<&str> = tasks
+        .iter()
+        .filter_map(|task| task.parent_task_id.as_deref())
+        .collect();
+    let mut stuck: Vec<&Task> = tasks
+        .iter()
+        .filter(|task| {
+            is_stuck(
+                task,
+                &parents_with_children,
+                reschedule_counts,
+                today,
+                stuck_after_days,
+                stuck_after_moves,
+            )
+        })
+        .collect();
+    stuck.sort_by(|a, b| {
+        neglect(b, today)
+            .cmp(&neglect(a, today))
+            .then_with(|| a.priority.cmp(&b.priority))
+    });
+    stuck
+}
+
+/// Days since a task was last touched: overdue days when dated, age when not.
+fn neglect(task: &Task, today: NaiveDate) -> i64 {
+    match task.due_date {
+        Some(due) => (today - due).num_days(),
+        None => created_date(task)
+            .map(|created| (today - created).num_days())
+            .unwrap_or(0),
+    }
+}
+
+/// The date part of a task's `created_at` timestamp, if it parses.
+fn created_date(task: &Task) -> Option<NaiveDate> {
+    let head = task.created_at.get(..10)?;
+    NaiveDate::parse_from_str(head, "%Y-%m-%d").ok()
+}
+
+fn is_stuck(
+    task: &Task,
+    parents_with_children: &BTreeSet<&str>,
+    reschedule_counts: &BTreeMap<String, usize>,
+    today: NaiveDate,
+    stuck_after_days: i64,
+    stuck_after_moves: usize,
+) -> bool {
+    if task.status != Status::Pending
+        || task.pinned
+        || task.decomposed_at.is_some()
+        || task.parent_task_id.is_some()
+        || task.recurrence_pattern.is_some()
+        || parents_with_children.contains(task.id.as_str())
+    {
+        return false;
+    }
+    let overdue = task
+        .due_date
+        .is_some_and(|due| (today - due).num_days() > stuck_after_days);
+    let never_dated = task.due_date.is_none()
+        && created_date(task)
+            .is_some_and(|created| (today - created).num_days() > stuck_after_days);
+    let moved = reschedule_counts.get(&task.id).copied().unwrap_or(0) >= stuck_after_moves;
+    overdue || never_dated || moved
 }
 
 #[cfg(test)]
@@ -546,5 +637,155 @@ mod tests {
         assert_eq!(groups.len(), 1);
         assert_eq!(groups.get(&(d1, Some(nine))).unwrap().len(), 2);
         assert!(!groups.contains_key(&(d1, None)));
+    }
+
+    // --- stuck detection (5a.2) ---
+
+    fn base_task(id: &str) -> Task {
+        task(
+            id,
+            crate::model::Priority::Medium,
+            "2026-01-01T00:00:00Z",
+            day(2026, 1, 1),
+            false,
+        )
+    }
+
+    fn stuck(tasks: &[Task], counts: &BTreeMap<String, usize>, today: NaiveDate) -> Vec<String> {
+        stuck_candidates(tasks, counts, today, 2, 2)
+            .into_iter()
+            .map(|t| t.id.clone())
+            .collect()
+    }
+
+    #[test]
+    fn overdue_task_is_stuck() {
+        let today = day(2026, 1, 10);
+        let mut t = base_task("a");
+        t.due_date = Some(day(2026, 1, 1));
+        assert_eq!(stuck(&[t], &BTreeMap::new(), today), vec!["a"]);
+    }
+
+    #[test]
+    fn recently_overdue_task_is_not_stuck() {
+        let today = day(2026, 1, 10);
+        let mut t = base_task("a");
+        t.due_date = Some(day(2026, 1, 9));
+        assert!(stuck(&[t], &BTreeMap::new(), today).is_empty());
+    }
+
+    #[test]
+    fn old_undated_task_is_stuck() {
+        let today = day(2026, 1, 10);
+        let mut t = base_task("a");
+        t.due_date = None;
+        t.created_at = "2026-01-01T00:00:00Z".into();
+        assert_eq!(stuck(&[t], &BTreeMap::new(), today), vec!["a"]);
+    }
+
+    #[test]
+    fn recent_undated_task_is_not_stuck() {
+        let today = day(2026, 1, 10);
+        let mut t = base_task("a");
+        t.due_date = None;
+        t.created_at = "2026-01-09T00:00:00Z".into();
+        assert!(stuck(&[t], &BTreeMap::new(), today).is_empty());
+    }
+
+    #[test]
+    fn repeatedly_rescheduled_task_is_stuck() {
+        let today = day(2026, 1, 10);
+        let mut t = base_task("a");
+        t.due_date = Some(day(2026, 1, 9)); // not overdue on its own
+        let mut counts = BTreeMap::new();
+        counts.insert("a".to_string(), 2usize);
+        assert_eq!(stuck(&[t], &counts, today), vec!["a"]);
+    }
+
+    #[test]
+    fn one_reschedule_is_not_stuck() {
+        let today = day(2026, 1, 10);
+        let mut t = base_task("a");
+        t.due_date = Some(day(2026, 1, 9));
+        let mut counts = BTreeMap::new();
+        counts.insert("a".to_string(), 1usize);
+        assert!(stuck(&[t], &counts, today).is_empty());
+    }
+
+    #[test]
+    fn pinned_task_is_never_stuck() {
+        let today = day(2026, 1, 10);
+        let mut t = base_task("a");
+        t.pinned = true;
+        assert!(stuck(&[t], &BTreeMap::new(), today).is_empty());
+    }
+
+    #[test]
+    fn task_with_children_is_not_stuck() {
+        let today = day(2026, 1, 10);
+        let parent = base_task("a");
+        let mut child = base_task("c");
+        child.parent_task_id = Some("a".into());
+        assert!(stuck(&[parent, child], &BTreeMap::new(), today).is_empty());
+    }
+
+    #[test]
+    fn decomposed_task_is_not_stuck_again() {
+        let today = day(2026, 1, 10);
+        let mut t = base_task("a");
+        t.decomposed_at = Some("2026-01-05T00:00:00Z".into());
+        assert!(stuck(&[t], &BTreeMap::new(), today).is_empty());
+    }
+
+    #[test]
+    fn child_task_is_not_stuck() {
+        let today = day(2026, 1, 10);
+        let mut t = base_task("c");
+        t.parent_task_id = Some("a".into());
+        assert!(stuck(&[t], &BTreeMap::new(), today).is_empty());
+    }
+
+    #[test]
+    fn recurring_task_is_not_stuck() {
+        let today = day(2026, 1, 10);
+        let mut t = base_task("a");
+        t.recurrence_pattern = Some(crate::model::Recurrence::Daily);
+        assert!(stuck(&[t], &BTreeMap::new(), today).is_empty());
+    }
+
+    #[test]
+    fn completed_task_is_not_stuck() {
+        let today = day(2026, 1, 10);
+        let mut t = base_task("a");
+        t.status = Status::Completed;
+        assert!(stuck(&[t], &BTreeMap::new(), today).is_empty());
+    }
+
+    #[test]
+    fn reopened_task_ignores_reschedules_before_completion() {
+        // The caller only counts reschedules after last_completed_at, so a
+        // reopened task with no post-completion moves is not stuck.
+        let today = day(2026, 1, 10);
+        let mut t = base_task("a");
+        t.due_date = Some(day(2026, 1, 9));
+        t.last_completed_at = Some("2026-01-05T00:00:00Z".into());
+        let counts = BTreeMap::new();
+        assert!(stuck(&[t], &counts, today).is_empty());
+    }
+
+    #[test]
+    fn stuck_candidates_order_longest_neglected_then_priority() {
+        let today = day(2026, 1, 10);
+        let mut older = base_task("older");
+        older.due_date = Some(day(2025, 12, 1));
+        older.priority = crate::model::Priority::Low;
+        let mut newer = base_task("newer");
+        newer.due_date = Some(day(2026, 1, 1));
+        newer.priority = crate::model::Priority::High;
+        let mut same_day_low = base_task("same-day-low");
+        same_day_low.due_date = Some(day(2026, 1, 1));
+        same_day_low.priority = crate::model::Priority::Low;
+        let order = stuck(&[same_day_low, newer, older], &BTreeMap::new(), today);
+        assert_eq!(order, vec!["older", "newer", "same-day-low"]);
     }
 }
