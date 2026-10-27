@@ -166,4 +166,8 @@ Decisions are kept indefinitely with no automatic size guard. Rows are small tex
 
 ## Migration Plan
 
-The core schema is extended with `pinned` and the two new tables on first open. Existing tasks default to `pinned = 0`. No task data is rewritten. The secretary is additive: without running the command, the core arm behaves exactly as before.
+No migration code is shipped. This is greenfield development with no deployed users and no production data; the only "existing store" scenario is a local dev database, and the correct fix there is to delete it rather than to carry `ALTER TABLE` machinery forever.
+
+All tables are created with `CREATE TABLE IF NOT EXISTS`, so a store opened for the first time gets the full current schema. New task columns default to false/NULL for any row that predates them.
+
+The secretary is additive: without running the command, the core arm behaves exactly as before.

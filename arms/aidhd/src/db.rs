@@ -122,33 +122,9 @@ fn configure(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Create tables and indexes if they are absent, and add columns that
-/// predate the current schema. Existing rows keep working unchanged.
+/// Create tables and indexes if they are absent.
 pub fn init_schema(conn: &Connection) -> Result<()> {
     conn.execute_batch(SCHEMA)?;
-    add_column_if_missing(conn, "tasks", "last_completed_at", "TEXT")?;
-    add_column_if_missing(conn, "tasks", "decomposed_at", "TEXT")?;
-    add_column_if_missing(conn, "tasks", "pinned", "INTEGER NOT NULL DEFAULT 0")?;
-    Ok(())
-}
-
-/// Add a column only when the table exists and the column does not.
-fn add_column_if_missing(conn: &Connection, table: &str, column: &str, spec: &str) -> Result<()> {
-    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
-    let mut exists = false;
-    let mut rows = stmt.query([])?;
-    while let Some(row) = rows.next()? {
-        let name: String = row.get(1)?;
-        if name == column {
-            exists = true;
-            break;
-        }
-    }
-    drop(rows);
-    drop(stmt);
-    if !exists {
-        conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {spec}"))?;
-    }
     Ok(())
 }
 
@@ -588,9 +564,13 @@ pub fn add_decision(conn: &Connection, new: &NewDecision) -> Result<Decision> {
 
 /// Fetch one decision by id.
 pub fn get_decision(conn: &Connection, id: &str) -> Result<Decision> {
-    conn.query_row("SELECT * FROM decisions WHERE id = ?1", [id], row_to_decision)
-        .optional()?
-        .ok_or_else(|| DbError::NotFound(format!("decision {id}")))
+    conn.query_row(
+        "SELECT * FROM decisions WHERE id = ?1",
+        [id],
+        row_to_decision,
+    )
+    .optional()?
+    .ok_or_else(|| DbError::NotFound(format!("decision {id}")))
 }
 
 /// List decisions newest first, optionally filtered by task or run.
@@ -664,12 +644,7 @@ pub fn start_run(conn: &Connection) -> Result<String> {
 }
 
 /// Finish a run, recording the decision count or an error.
-pub fn finish_run(
-    conn: &Connection,
-    id: &str,
-    decisions: i64,
-    error: Option<&str>,
-) -> Result<()> {
+pub fn finish_run(conn: &Connection, id: &str, decisions: i64, error: Option<&str>) -> Result<()> {
     let affected = conn.execute(
         "UPDATE secretary_runs SET finished_at = ?2, decisions = ?3, error = ?4 WHERE id = ?1",
         params![id, now(), decisions, error],
@@ -682,9 +657,13 @@ pub fn finish_run(
 
 /// Fetch a run by id.
 pub fn get_run(conn: &Connection, id: &str) -> Result<Run> {
-    conn.query_row("SELECT * FROM secretary_runs WHERE id = ?1", [id], row_to_run)
-        .optional()?
-        .ok_or_else(|| DbError::NotFound(format!("run {id}")))
+    conn.query_row(
+        "SELECT * FROM secretary_runs WHERE id = ?1",
+        [id],
+        row_to_run,
+    )
+    .optional()?
+    .ok_or_else(|| DbError::NotFound(format!("run {id}")))
 }
 
 /// The most recent run, if any.
@@ -744,7 +723,10 @@ mod tests {
             ..TaskUpdate::default()
         };
         let updated = update_task(&conn, &task.id, &update).unwrap();
-        assert_eq!(updated.decomposed_at.as_deref(), Some("2026-01-02T03:04:05Z"));
+        assert_eq!(
+            updated.decomposed_at.as_deref(),
+            Some("2026-01-02T03:04:05Z")
+        );
         assert!(updated.pinned);
     }
 
@@ -828,6 +810,45 @@ mod tests {
         assert!(finished.finished_at.is_some());
         assert!(finished.error.is_none());
         assert!(finish_run(&conn, "missing", 0, None).is_err());
+
+        // A run that fails mid-pass records its error and zero decisions.
+        let failed_id = start_run(&conn).unwrap();
+        finish_run(&conn, &failed_id, 0, Some("credential missing")).unwrap();
+        let failed = get_run(&conn, &failed_id).unwrap();
+        assert_eq!(failed.decisions, 0);
+        assert_eq!(failed.error.as_deref(), Some("credential missing"));
+        assert!(failed.finished_at.is_some());
+    }
+
+    #[test]
+    fn decision_round_trips_every_kind() {
+        let mut conn = open_in_memory().unwrap();
+        let task = add_task(&mut conn, &sample("kinds")).unwrap();
+        let run_id = start_run(&conn).unwrap();
+        let kinds = [
+            DecisionKind::Rescheduled,
+            DecisionKind::Skipped,
+            DecisionKind::Scheduled,
+            DecisionKind::Decomposed,
+        ];
+        for kind in kinds {
+            let decision = add_decision(
+                &conn,
+                &NewDecision {
+                    task_id: task.id.clone(),
+                    kind,
+                    old_due_date: None,
+                    new_due_date: None,
+                    reason: "test".into(),
+                    details: None,
+                    run_id: run_id.clone(),
+                },
+            )
+            .unwrap();
+            let fetched = get_decision(&conn, &decision.id).unwrap();
+            assert_eq!(fetched.kind, kind);
+            assert_eq!(fetched.reason, "test");
+        }
     }
 
     #[test]
