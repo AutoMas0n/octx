@@ -99,7 +99,7 @@ jobs:
         run: cargo build --target ${{ matrix.target }} --release
       - name: Build arms
         run: |
-          for arm in octx-fmt octx-parse octx-deploy octx-agent octx-harness octx-jam; do
+          for arm in octx-fmt octx-parse octx-deploy octx-agent octx-harness octx-jam octx-aidhd; do
             cargo build -p "$arm" --target ${{ matrix.target }} --release
           done
       - name: Prepare artifacts
@@ -110,7 +110,7 @@ jobs:
           gzip -c octx > "artifacts/octx-${{ matrix.target }}.gz"
           sha256sum "artifacts/octx-${{ matrix.target }}.gz" | cut -d' ' -f1 > "artifacts/octx-${{ matrix.target }}.gz.sha256"
           # Arms
-          for arm in fmt parse deploy agent harness jam; do
+          for arm in fmt parse deploy agent harness jam aidhd; do
             cp "target/${{ matrix.target }}/release/$arm" "$arm"
             gzip -c "$arm" > "artifacts/$arm-${{ matrix.target }}.gz"
             sha256sum "artifacts/$arm-${{ matrix.target }}.gz" | cut -d' ' -f1 > "artifacts/$arm-${{ matrix.target }}.gz.sha256"
@@ -209,7 +209,8 @@ jobs:
                 deploy: "Deployment tool",
                 agent: "Headless ACP agent runner with a tool plane and script socket",
                 harness: "Resolves harness definitions and dispatches them to the agent arm",
-                jam: "ListenBrainz recommendations into a Qobuz playlist, and listens back into ListenBrainz" };
+                jam: "ListenBrainz recommendations into a Qobuz playlist, and listens back into ListenBrainz",
+                aidhd: "One-shot task store with a deterministic secretary, a decision log you can undo, and on-demand voice capture" };
 
             {
               registry_version: 1,
