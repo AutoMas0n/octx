@@ -1095,13 +1095,17 @@ fn reminders_enable_and_disable_with_a_stub_scheduler() {
     assert_eq!(state["enabled"], true);
     let log_text = std::fs::read_to_string(&log).unwrap();
     assert!(log_text.contains("--period-ms 3600000"), "{log_text}");
-    assert!(log_text.contains("aidhd-reminders"), "{log_text}");
+    // `--job-id` only accepts an integer; a string id makes
+    // termux-job-scheduler fail to parse and hang. Pin the integer.
+    assert!(log_text.contains("--job-id 1001"), "{log_text}");
 
     let disable = run_with_env(&db, &["reminders", "disable"], &env);
     assert!(disable.status.success());
     let state: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
     assert_eq!(state["enabled"], false);
+    let log_text = std::fs::read_to_string(&log).unwrap();
+    assert!(log_text.contains("--cancel 1001"), "{log_text}");
 }
 
 #[test]

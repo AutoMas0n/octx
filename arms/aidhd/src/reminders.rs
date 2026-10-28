@@ -22,6 +22,14 @@ pub const MORNING_HOUR: u8 = 8;
 /// Default evening reminder hour in local time.
 pub const EVENING_HOUR: u8 = 19;
 
+/// Stable Termux job id for the reminder job.
+///
+/// `termux-job-scheduler --job-id` only accepts an integer; a string value
+/// makes the command fail to parse the argument and then hang instead of
+/// exiting. Reusing one fixed id keeps `enable` idempotent (it overwrites the
+/// previous job) and lets `remove` cancel the exact job it installed.
+pub const TERMUX_JOB_ID: &str = "1001";
+
 /// Persisted reminder settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReminderSettings {
@@ -150,7 +158,7 @@ pub fn install(scheduler: Scheduler, settings: &ReminderSettings) -> Result<Stri
                     "--period-ms",
                     "3600000",
                     "--job-id",
-                    "aidhd-reminders",
+                    TERMUX_JOB_ID,
                     "--persisted",
                     "true",
                 ])
@@ -211,7 +219,7 @@ pub fn remove(scheduler: Scheduler) -> Result<()> {
     match scheduler {
         Scheduler::Termux => {
             let _ = Command::new("termux-job-scheduler")
-                .args(["--cancel", "aidhd-reminders"])
+                .args(["--cancel", TERMUX_JOB_ID])
                 .output();
         }
         Scheduler::Cron => {
