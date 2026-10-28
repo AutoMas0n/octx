@@ -1,7 +1,7 @@
 # aidhd-arm Specification
 
 ## Purpose
-TBD - created by archiving change aidhd-secretary. Update Purpose after archive.
+The `aidhd` arm is a local, one-shot task manager for Termux: it captures tasks by text or voice, keeps them in an arm-owned SQLite store, and surfaces due work and smart next actions without a daemon. This specification defines that behaviour end to end — capture and parsing (including natural-language and AI-assisted due dates with fallback), storage and concurrency safety, listing, completion and statistics, recurrence, subtasks, due queries and notifications, deterministic secretary auto-scheduling of undated tasks, optional LLM tie-breaks, configurable providers and credentials via `octx-creds`, portable export, and the skill discovery surface — so the arm stays predictable, offline-friendly, and scriptable from cron or a single `octx x aidhd` invocation.
 
 ## Requirements
 
