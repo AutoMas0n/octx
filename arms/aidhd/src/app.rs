@@ -5,12 +5,13 @@ use anyhow::{Context, bail};
 use chrono::{Datelike, Duration, Local, NaiveDate, Timelike};
 use rusqlite::Connection;
 
-use crate::cli::{Cli, Commands, DecisionsCommand};
+use crate::cli::{Cli, Commands, DecisionsCommand, RemindersCommand};
 use crate::config;
 use crate::db;
 use crate::export;
 use crate::llm::{LlmClient, LlmError};
 use crate::model::{NewTask, Priority, Recurrence, Status, Task, TaskFilter, TaskUpdate};
+use crate::reminders::{self, ReminderSettings};
 use crate::secretary;
 use crate::sink::{Cue, PlatformSink, Sink, SinkError};
 
@@ -237,6 +238,61 @@ fn dispatch(
                 secretary_status(conn, json)
             } else {
                 secretary_pass(conn, dry_run, notify, json, sink, llm)
+            }
+        }
+        Commands::Reminders { dry_run, action } => {
+            let action = action.unwrap_or(RemindersCommand::Preview);
+            match action {
+                RemindersCommand::Preview => {
+                    println!(
+                        "{}",
+                        reminders::schedule_description(&ReminderSettings::load()?)
+                    );
+                    Ok(())
+                }
+                RemindersCommand::Enable => {
+                    let mut settings = ReminderSettings::load()?;
+                    if dry_run {
+                        println!(
+                            "would install {}",
+                            reminders::schedule_description(&settings)
+                        );
+                        return Ok(());
+                    }
+                    if let Some(scheduler) = reminders::detect_scheduler() {
+                        let message = reminders::install(scheduler, &settings)?;
+                        settings.enabled = true;
+                        settings.save()?;
+                        println!("{message}");
+                        Ok(())
+                    } else {
+                        println!(
+                            "No supported scheduler found. Add these lines to your crontab manually:"
+                        );
+                        println!("{}", reminders::manual_cron_lines(&settings));
+                        bail!(
+                            "no supported scheduler found; install termux-job-scheduler or crontab"
+                        )
+                    }
+                }
+                RemindersCommand::Disable => {
+                    if dry_run {
+                        println!("would stop future reminder prompts");
+                        return Ok(());
+                    }
+                    if let Some(scheduler) = reminders::detect_scheduler() {
+                        reminders::remove(scheduler)?;
+                    }
+                    let mut settings = ReminderSettings::load()?;
+                    settings.enabled = false;
+                    settings.save()?;
+                    println!("reminders disabled");
+                    Ok(())
+                }
+                RemindersCommand::Run => {
+                    let settings = ReminderSettings::load()?;
+                    reminders::run(conn, sink, &settings)
+                }
             }
         }
         Commands::Decisions {

@@ -5,6 +5,7 @@ pub mod db;
 pub mod export;
 pub mod llm;
 pub mod model;
+pub mod reminders;
 pub mod secretary;
 pub mod sink;
 pub mod web;

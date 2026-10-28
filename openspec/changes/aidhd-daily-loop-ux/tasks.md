@@ -25,11 +25,11 @@
 
 ## 4. Reminder setup
 
-- [ ] 4.1 Add a `Reminders { dry_run, action }` variant in `arms/aidhd/src/cli.rs` and dispatch in `arms/aidhd/src/app.rs`; verify `cargo run -p octx-aidhd -- reminders --help` prints the preview, enable, and disable forms.
-- [ ] 4.2 Implement schedule installation through the detected platform hook (Termux job scheduler or cron) and persist the enabled state; `enable` installs the default morning and evening cadence and prints what it installed, `disable` stops future prompts, and a missing scheduler prints manual cron lines and exits non-zero; verify tests cover enable, disable, and the no-scheduler path.
-- [ ] 4.3 Make `--dry-run` print the intended schedule and write nothing; verify a test asserts no state change and no scheduler call.
-- [ ] 4.4 Route reminder prompts through the existing `next`/`due --notify` selection, quiet hours, budget, and dedup; verify a test confirms quiet hours send nothing and that a second run in the same window does not repeat.
-- [ ] 4.5 Document `reminders` in `arms/aidhd/skill.md` under Usage and Options with enable, disable, and preview examples; verify `cargo test --test skill_conformance` passes.
+- [x] 4.1 Add a `Reminders { dry_run, action }` variant in `arms/aidhd/src/cli.rs` and dispatch in `arms/aidhd/src/app.rs`; verify `cargo run -p octx-aidhd -- reminders --help` prints the preview, enable, and disable forms.
+- [x] 4.2 Implement schedule installation through the detected platform hook (Termux job scheduler or cron) and persist the enabled state; `enable` installs the default morning and evening cadence and prints what it installed, `disable` stops future prompts, and a missing scheduler prints manual cron lines and exits non-zero; verify tests cover enable, disable, and the no-scheduler path.
+- [x] 4.3 Make `--dry-run` print the intended schedule and write nothing; verify a test asserts no state change and no scheduler call.
+- [x] 4.4 Route reminder prompts through the existing `next`/`due --notify` selection, quiet hours, budget, and dedup; verify a test confirms quiet hours send nothing and that a second run in the same window does not repeat.
+- [x] 4.5 Document `reminders` in `arms/aidhd/skill.md` under Usage and Options with enable, disable, and preview examples; verify `cargo test --test skill_conformance` passes.
 
 ## 5. Integration verification
 

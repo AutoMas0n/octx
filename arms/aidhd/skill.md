@@ -29,6 +29,7 @@ octx x aidhd suggest <id>
 octx x aidhd pin <id>
 octx x aidhd unpin <id>
 octx x aidhd secretary [--dry-run] [--notify] [--status] [--json]
+octx x aidhd reminders [--dry-run] [preview|enable|disable|run]
 octx x aidhd decisions [--limit <n>] [--json]
 octx x aidhd decisions prune [--before <YYYY-MM-DD>]
 octx x aidhd undo [last|<id>]
@@ -77,6 +78,15 @@ When `add` gets no date from flags or parsing, the arm schedules it deterministi
 - `done <title>` — when the argument matches no id prefix, treat it as a case-insensitive title substring and complete only a unique pending match. Ambiguous matches are listed and nothing is completed.
 - After completing, the output reports how many tasks were completed today, for example `completed 3f9a1c2e (3 done today)`.
 
+### Reminders (`reminders`)
+
+- `reminders preview` — print the default morning and evening cadence without installing anything.
+- `reminders enable` — install the daily reminder schedule through `termux-job-scheduler` or `crontab` and remember that it is enabled.
+- `reminders disable` — remove the installed schedule and stop future prompts.
+- `reminders run` — run one reminder window; the installed schedule calls this.
+- `--dry-run` — show what `enable` or `disable` would do and write nothing.
+- If neither scheduler is available, `enable` prints the manual cron lines and exits non-zero.
+
 ### Secretary and decisions (`pin`, `unpin`, `secretary`, `decisions`, `undo`)
 - `pin <id>` / `unpin <id>` — mark a task fixed so the secretary never reschedules it, or allow moves again. Never changes the due date or status.
 - `secretary` — run one deterministic pass: decompose stuck tasks, fill undated tasks, reschedule overdue work, then resolve overloaded days and same-time collisions. Writes decisions and exits.
@@ -118,6 +128,8 @@ When `add` gets no date from flags or parsing, the arm schedules it deterministi
 - `octx x aidhd list --status pending --category home`
 - `octx x aidhd search garage`
 - `octx x aidhd done report`
+- `octx x aidhd reminders preview`
+- `octx x aidhd reminders enable`
 - `octx x aidhd done <id>`
 - `octx x aidhd stats`
 - `octx x aidhd next`

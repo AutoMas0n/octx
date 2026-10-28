@@ -991,3 +991,142 @@ fn done_counts_three_completions_in_one_day() {
         "counts three completions: {text}"
     );
 }
+
+fn run_with_env(db: &Path, args: &[&str], env: &[(&str, &str)]) -> std::process::Output {
+    let mut command = Command::new(bin());
+    command
+        .env("OCTX_AIDHD_DB", db)
+        .env("AIDHD_AI_DISABLED", "1")
+        .args(args);
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    command.output().expect("binary runs")
+}
+
+fn stub_scheduler(dir: &Path, name: &str) -> PathBuf {
+    let path = dir.join(name);
+    std::fs::write(
+        &path,
+        "#!/bin/sh\necho \"$@\" >> \"$AIDHD_STUB_LOG\"\nexit 0\n",
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&path).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&path, perms).unwrap();
+    path
+}
+
+#[test]
+fn reminders_help_lists_preview_enable_disable_and_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = temp_db(dir.path());
+    let output = run(&db, &["reminders", "--help"]);
+    assert!(output.status.success());
+    let text = stdout(&output);
+    for expected in ["preview", "enable", "disable", "run"] {
+        assert!(text.contains(expected), "missing {expected} in: {text}");
+    }
+}
+
+#[test]
+fn reminders_preview_prints_the_default_cadence() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = temp_db(dir.path());
+    let data = dir.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let output = run_with_env(
+        &db,
+        &["reminders", "preview"],
+        &[("XDG_DATA_HOME", data.to_str().unwrap())],
+    );
+    assert!(output.status.success());
+    let text = stdout(&output);
+    assert!(text.contains("morning 08:00"), "{text}");
+    assert!(text.contains("evening 19:00"), "{text}");
+}
+
+#[test]
+fn reminders_dry_run_enable_writes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = temp_db(dir.path());
+    let data = dir.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let output = run_with_env(
+        &db,
+        &["reminders", "--dry-run", "enable"],
+        &[("XDG_DATA_HOME", data.to_str().unwrap())],
+    );
+    assert!(output.status.success());
+    let text = stdout(&output);
+    assert!(text.contains("would install"), "{text}");
+    assert!(
+        !data.join("octx/aidhd/reminders.json").exists(),
+        "dry-run wrote state"
+    );
+}
+
+#[test]
+fn reminders_enable_and_disable_with_a_stub_scheduler() {
+    let dir = tempfile::tempdir().unwrap();
+    let stubs = dir.path().join("stubs");
+    std::fs::create_dir_all(&stubs).unwrap();
+    stub_scheduler(&stubs, "termux-job-scheduler");
+    let log = dir.path().join("stub.log");
+    let data = dir.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let path = format!("{}:{}", stubs.display(), std::env::var("PATH").unwrap());
+    let env = [
+        ("PATH", path.as_str()),
+        ("AIDHD_STUB_LOG", log.to_str().unwrap()),
+        ("XDG_DATA_HOME", data.to_str().unwrap()),
+    ];
+    let db = temp_db(dir.path());
+
+    let enable = run_with_env(&db, &["reminders", "enable"], &env);
+    assert!(
+        enable.status.success(),
+        "enable failed: {}",
+        String::from_utf8_lossy(&enable.stderr)
+    );
+    let state_path = data.join("octx/aidhd/reminders.json");
+    let state: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
+    assert_eq!(state["enabled"], true);
+    let log_text = std::fs::read_to_string(&log).unwrap();
+    assert!(log_text.contains("--period-ms 3600000"), "{log_text}");
+    assert!(log_text.contains("aidhd-reminders"), "{log_text}");
+
+    let disable = run_with_env(&db, &["reminders", "disable"], &env);
+    assert!(disable.status.success());
+    let state: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
+    assert_eq!(state["enabled"], false);
+}
+
+#[test]
+fn reminders_enable_without_a_scheduler_prints_cron_lines_and_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let minimal = dir.path().join("minimal");
+    std::fs::create_dir_all(&minimal).unwrap();
+    std::os::unix::fs::symlink("/bin/sh", minimal.join("sh")).unwrap();
+    let data = dir.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let db = temp_db(dir.path());
+    let path = minimal.to_str().unwrap();
+    let output = run_with_env(
+        &db,
+        &["reminders", "enable"],
+        &[("PATH", path), ("XDG_DATA_HOME", data.to_str().unwrap())],
+    );
+    assert!(
+        !output.status.success(),
+        "enable should fail without a scheduler"
+    );
+    let text = stdout(&output);
+    assert!(
+        text.contains("crontab manually"),
+        "prints manual lines: {text}"
+    );
+    assert!(text.contains("reminders run"), "{text}");
+}

@@ -88,6 +88,14 @@ pub enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Preview, install, or remove the reminder schedule.
+    Reminders {
+        /// Print the intended schedule without writing or installing anything.
+        #[arg(long)]
+        dry_run: bool,
+        #[command(subcommand)]
+        action: Option<RemindersCommand>,
+    },
     /// Show the decision log, or prune it.
     Decisions {
         #[arg(long)]
@@ -140,6 +148,18 @@ pub enum Commands {
         #[arg(long, default_value_t = 7317)]
         port: u16,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RemindersCommand {
+    /// Print the default morning and evening cadence without installing it.
+    Preview,
+    /// Install the default morning and evening cadence.
+    Enable,
+    /// Stop future scheduled prompts.
+    Disable,
+    /// Run one reminder window (called by the installed schedule).
+    Run,
 }
 
 #[derive(Debug, Subcommand)]
