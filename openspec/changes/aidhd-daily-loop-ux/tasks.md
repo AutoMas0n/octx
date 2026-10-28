@@ -33,10 +33,10 @@
 
 ## 5. Integration verification
 
-- [ ] 5.1 Run `cargo fmt --all --check` and verify it reports no changes.
-- [ ] 5.2 Run `cargo clippy -p octx-aidhd --all-targets -- -D warnings` and verify it reports no warnings.
-- [ ] 5.3 Run `cargo test -p octx-aidhd` and `cargo test --test skill_conformance` and verify every test passes.
-- [ ] 5.4 Run `cargo build -p octx-aidhd --release` and verify the binary builds.
+- [x] 5.1 Run `cargo fmt --all --check` and verify it reports no changes.
+- [x] 5.2 Run `cargo clippy -p octx-aidhd --all-targets -- -D warnings` and verify it reports no warnings.
+- [x] 5.3 Run `cargo test -p octx-aidhd` and `cargo test --test skill_conformance` and verify every test passes.
+- [x] 5.4 Run `cargo build -p octx-aidhd --release` and verify the binary builds.
 
 ## Workflow follow-up
 
