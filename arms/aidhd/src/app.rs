@@ -165,6 +165,9 @@ fn dispatch(
                 }
                 println!("{}", serde_json::to_string_pretty(&items)?);
             } else {
+                if tasks.is_empty() {
+                    print_first_run_hint(conn)?;
+                }
                 for task in &tasks {
                     println!(
                         "{}",
@@ -206,18 +209,19 @@ fn dispatch(
             Ok(())
         }
         Commands::Done { id } => {
-            let task = resolve(conn, &id)?;
+            let task = resolve_done_target(conn, id.as_deref())?;
             let next = db::complete_task(conn, &task.id)?;
+            let done_today = db::completed_on(conn, Local::now().date_naive())?;
             match next {
                 Some(next) => println!(
-                    "completed {}; next occurrence {} due {}",
+                    "completed {}; next occurrence {} due {} ({done_today} done today)",
                     short_id(&task.id),
                     short_id(&next.id),
                     next.due_date
                         .map(|d| d.format("%Y-%m-%d").to_string())
                         .unwrap_or_default()
                 ),
-                None => println!("completed {}", short_id(&task.id)),
+                None => println!("completed {} ({done_today} done today)", short_id(&task.id)),
             }
             Ok(())
         }
@@ -283,8 +287,14 @@ fn dispatch(
             Ok(())
         }
         Commands::Search { text } => {
-            for task in db::search_tasks(conn, &text)? {
-                println!("{}", format_task(&task, 0));
+            let tasks = db::search_tasks(conn, &text)?;
+            if tasks.is_empty() {
+                println!("No tasks match '{text}'. Add one with `aidhd add \"{text}\"`.");
+                print_first_run_hint(conn)?;
+            } else {
+                for task in &tasks {
+                    println!("{}", format_task(task, 0));
+                }
             }
             Ok(())
         }
@@ -338,7 +348,10 @@ fn dispatch(
         Commands::Next => {
             match db::next_task(conn, Local::now().date_naive())? {
                 Some(task) => println!("{}", action_prompt(&task)),
-                None => println!("No open tasks."),
+                None => {
+                    println!("No open tasks.");
+                    print_first_run_hint(conn)?;
+                }
             }
             Ok(())
         }
@@ -498,7 +511,47 @@ fn parse_recurrence(value: Option<String>) -> anyhow::Result<Option<Recurrence>>
 }
 
 fn resolve(conn: &Connection, id: &str) -> anyhow::Result<Task> {
-    Ok(db::find_task_by_prefix(conn, id)?)
+    db::find_task_by_prefix(conn, id)
+        .map_err(|_| anyhow::anyhow!("no task matches '{id}'; run `aidhd list` to see tasks"))
+}
+
+/// Resolve the target of `done`: no argument or `last` means the task `next`
+/// would surface; anything else is an id prefix first, then a title substring.
+fn resolve_done_target(conn: &Connection, id: Option<&str>) -> anyhow::Result<Task> {
+    match id {
+        None | Some("last") => db::next_task(conn, Local::now().date_naive())?.ok_or_else(|| {
+            anyhow::anyhow!("no open task to complete; run `aidhd today` to see what is open")
+        }),
+        Some(value) => {
+            if let Ok(task) = db::find_task_by_prefix(conn, value) {
+                return Ok(task);
+            }
+            let matches = db::pending_title_matches(conn, value)?;
+            match matches.len() {
+                1 => Ok(matches.into_iter().next().expect("one match")),
+                0 => Err(anyhow::anyhow!(
+                    "no task matches '{value}'; run `aidhd list` to see tasks"
+                )),
+                _ => {
+                    println!("'{value}' matches more than one pending task:");
+                    for task in &matches {
+                        println!("  {}  {}", short_id(&task.id), task.title);
+                    }
+                    Err(anyhow::anyhow!(
+                        "nothing completed; rerun `done` with a longer title or an id"
+                    ))
+                }
+            }
+        }
+    }
+}
+
+/// Print a getting-started hint when the store is completely empty.
+fn print_first_run_hint(conn: &Connection) -> anyhow::Result<()> {
+    if db::stats(conn)?.total == 0 {
+        println!("Getting started: add your first task with `aidhd add \"buy milk\"`.");
+    }
+    Ok(())
 }
 
 pub fn short_id(id: &str) -> String {

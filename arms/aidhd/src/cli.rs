@@ -64,8 +64,12 @@ pub enum Commands {
     },
     /// Reopen a completed or cancelled task.
     Reopen { id: String },
-    /// Mark a task complete.
-    Done { id: String },
+    /// Mark a task complete. Omit the argument to complete the task `next` or
+    /// `today` would surface; `last` is an explicit alias for the same thing.
+    Done {
+        /// Task id prefix, title substring, or `last`.
+        id: Option<String>,
+    },
     /// Mark a task fixed so the secretary never moves it.
     Pin { id: String },
     /// Let the secretary move a task again.

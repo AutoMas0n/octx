@@ -59,6 +59,8 @@ When `add` gets no date from flags or parsing, the arm schedules it deterministi
 - `--json` — print machine-readable JSON instead of text. `today` only.
 
 ### Read and query (`list`, `search`, `stats`, `next`, `due`)
+- `search <text>` — case-insensitive title search. A miss names the query, suggests `aidhd add`, and still exits `0`.
+- When the store has no tasks at all, `list`, `search`, and `next` print a getting-started hint with an `aidhd add` example.
 - `--status <pending|completed|cancelled>` — filter by status. `list` only.
 - `--category <name>` — filter by category. `list` only.
 - `--parent <id>` — list only that parent's subtasks. `list` only.
@@ -70,10 +72,10 @@ When `add` gets no date from flags or parsing, the arm schedules it deterministi
 
 ### Completion (`done`)
 
-- `done` — with no argument, complete the task most recently surfaced by `next` or `today`. `done last` is an explicit alias.
-- `done <id>` — complete a task by id or unique id prefix.
+- `done` — with no argument, complete the task most recently surfaced by `next` or `today`. `done last` is an explicit alias. When nothing is open, it exits non-zero and points at `aidhd today`.
+- `done <id>` — complete a task by id or unique id prefix. An id that matches no task points at `aidhd list`.
 - `done <title>` — when the argument matches no id prefix, treat it as a case-insensitive title substring and complete only a unique pending match. Ambiguous matches are listed and nothing is completed.
-- After completing, the output reports how many tasks were completed today.
+- After completing, the output reports how many tasks were completed today, for example `completed 3f9a1c2e (3 done today)`.
 
 ### Secretary and decisions (`pin`, `unpin`, `secretary`, `decisions`, `undo`)
 - `pin <id>` / `unpin <id>` — mark a task fixed so the secretary never reschedules it, or allow moves again. Never changes the due date or status.
@@ -115,6 +117,7 @@ When `add` gets no date from flags or parsing, the arm schedules it deterministi
 - `printf 'buy thermal paste\n' | octx x aidhd add -`
 - `octx x aidhd list --status pending --category home`
 - `octx x aidhd search garage`
+- `octx x aidhd done report`
 - `octx x aidhd done <id>`
 - `octx x aidhd stats`
 - `octx x aidhd next`
@@ -215,7 +218,7 @@ AIDHD_AI_PROVIDER=openai AIDHD_AI_MODEL=gpt-4o-mini octx x aidhd ask "what shoul
 
 ## Failure modes
 - **No subcommand or an unknown flag** — exits `2` from `clap` and prints usage to stderr.
-- **A task id that does not exist** — exits `1` naming the id; no write occurs.
+- **A task id that does not exist** — exits `1` naming the id and pointing at `aidhd list` (or `aidhd today` for `show`); no write occurs.
 - **The arm database cannot be opened or written** — exits non-zero naming the path; text commands remain usable once the path is writable.
 - **A concurrent writer holds the lock longer than `busy_timeout`** — exits non-zero with a database-busy message; retrying the command is safe.
 - **`voice` when the platform sink cannot capture audio** — exits `1` with a clear message; text commands remain usable.

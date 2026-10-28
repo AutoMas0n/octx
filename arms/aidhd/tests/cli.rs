@@ -823,3 +823,171 @@ fn show_prints_detail_and_rejects_an_unknown_id() {
         "unknown id points at today: {err}"
     );
 }
+
+#[test]
+fn done_without_an_argument_completes_the_next_task() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = temp_db(dir.path());
+    run(&db, &["add", "first task", "--priority", "high"]);
+    run(&db, &["add", "second task", "--priority", "low"]);
+
+    let next = run(&db, &["next"]);
+    assert!(next.status.success());
+    assert!(
+        stdout(&next).to_lowercase().contains("first task"),
+        "next surfaced the task"
+    );
+
+    let done = run(&db, &["done"]);
+    assert!(done.status.success(), "done succeeds without an id");
+    let text = stdout(&done);
+    assert!(text.contains("completed"), "reports completion: {text}");
+    assert!(
+        text.contains("(1 done today)"),
+        "reports today's count: {text}"
+    );
+
+    let list = run(&db, &["list", "--status", "pending"]);
+    assert!(
+        !stdout(&list).to_lowercase().contains("first task"),
+        "task is completed"
+    );
+    assert!(
+        stdout(&list).to_lowercase().contains("second task"),
+        "other task remains"
+    );
+}
+
+#[test]
+fn done_last_is_an_alias_for_the_next_task() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = temp_db(dir.path());
+    run(&db, &["add", "alpha task", "--priority", "high"]);
+    run(&db, &["add", "beta task", "--priority", "low"]);
+
+    let done = run(&db, &["done", "last"]);
+    assert!(done.status.success());
+    let text = stdout(&done);
+    assert!(text.contains("completed"), "{text}");
+    let list = run(&db, &["list", "--status", "pending"]);
+    assert!(
+        !stdout(&list).to_lowercase().contains("alpha task"),
+        "last completed the next task"
+    );
+}
+
+#[test]
+fn done_without_an_argument_fails_when_nothing_is_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = temp_db(dir.path());
+    let done = run(&db, &["done"]);
+    assert!(!done.status.success());
+    let err = String::from_utf8_lossy(&done.stderr).to_string();
+    assert!(err.contains("aidhd today"), "points at today: {err}");
+}
+
+#[test]
+fn done_resolves_a_unique_title_substring_case_insensitively() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = temp_db(dir.path());
+    run(&db, &["add", "buy MILK"]);
+    run(&db, &["add", "unrelated chore"]);
+
+    let done = run(&db, &["done", "milk"]);
+    assert!(done.status.success(), "unique title match completes");
+    let text = stdout(&done);
+    assert!(text.contains("(1 done today)"), "{text}");
+    let list = run(&db, &["list", "--status", "pending"]);
+    assert!(
+        !stdout(&list).to_lowercase().contains("milk"),
+        "matched task is completed"
+    );
+}
+
+#[test]
+fn done_lists_ambiguous_title_matches_and_completes_none() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = temp_db(dir.path());
+    run(&db, &["add", "write report draft"]);
+    run(&db, &["add", "write report final"]);
+
+    let done = run(&db, &["done", "report"]);
+    assert!(!done.status.success(), "ambiguous title fails");
+    let text = stdout(&done);
+    assert!(text.contains("matches more than one"), "{text}");
+    assert!(
+        text.to_lowercase().contains("report"),
+        "candidates are listed: {text}"
+    );
+
+    let list = run(&db, &["list", "--status", "pending", "--json"]);
+    let tasks: serde_json::Value = serde_json::from_str(&stdout(&list)).unwrap();
+    assert_eq!(tasks.as_array().unwrap().len(), 2, "nothing was completed");
+}
+
+#[test]
+fn search_miss_names_the_query_and_suggests_add() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = temp_db(dir.path());
+    run(&db, &["add", "existing task"]);
+    let search = run(&db, &["search", "nonexistent"]);
+    assert!(search.status.success(), "search miss exits zero");
+    let text = stdout(&search);
+    assert!(text.contains("nonexistent"), "names the query: {text}");
+    assert!(text.contains("aidhd add"), "suggests add: {text}");
+}
+
+#[test]
+fn empty_store_list_prints_a_getting_started_hint() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = temp_db(dir.path());
+    let list = run(&db, &["list"]);
+    assert!(list.status.success());
+    let text = stdout(&list);
+    assert!(text.contains("Getting started"), "{text}");
+    assert!(
+        text.contains("aidhd add"),
+        "hint has an add example: {text}"
+    );
+}
+
+#[test]
+fn done_after_today_completes_the_next_task() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = temp_db(dir.path());
+    run(&db, &["add", "errand alpha", "--priority", "high"]);
+    run(&db, &["add", "errand beta", "--priority", "low"]);
+
+    let today = run(&db, &["today"]);
+    assert!(today.status.success());
+
+    let done = run(&db, &["done"]);
+    assert!(done.status.success(), "done works after today");
+    let text = stdout(&done);
+    assert!(text.contains("completed"), "{text}");
+    let list = run(&db, &["list", "--status", "pending"]);
+    let remaining = stdout(&list);
+    assert!(
+        !(remaining.contains("errand alpha") && remaining.contains("errand beta")),
+        "one task was completed: {remaining}"
+    );
+}
+
+#[test]
+fn done_counts_three_completions_in_one_day() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = temp_db(dir.path());
+    run(&db, &["add", "count one"]);
+    run(&db, &["add", "count two"]);
+    run(&db, &["add", "count three"]);
+
+    assert!(run(&db, &["done"]).status.success());
+    assert!(run(&db, &["done"]).status.success());
+    let third = run(&db, &["done"]);
+    assert!(third.status.success());
+    let text = stdout(&third);
+    assert!(
+        text.contains("(3 done today)"),
+        "counts three completions: {text}"
+    );
+}

@@ -16,12 +16,12 @@
 
 ## 3. Frictionless completion, feedback, and guidance
 
-- [ ] 3.1 Make `Done`'s id optional in `arms/aidhd/src/cli.rs`; when absent, complete the deterministic `db::next_task` selection, with `last` as an explicit alias; verify tests cover no-argument completion after `next`, another after `today`, and the no-surfaced-task error pointing at `today`.
-- [ ] 3.2 Add fuzzy title resolution for `done <text>`: fall back to a case-insensitive unique pending-title match, list candidates and complete nothing on ambiguity; verify tests cover the unique and ambiguous cases and that an ambiguous run changes no task.
-- [ ] 3.3 Add a completion count for the current local day and include `(N done today)` in `done` output; verify a test seeds two completions then completes a third and asserts the count.
-- [ ] 3.4 Make `search` with no matches name the query, suggest `aidhd add`, and exit zero; make not-found errors point at `aidhd list`; verify tests assert the message and exit codes.
-- [ ] 3.5 Add a first-run hint when the store has no tasks and a task-reading command runs; verify a test asserts the hint contains an `aidhd add` example.
-- [ ] 3.6 Document argument-free `done`, the completion count, and the lookup guidance in `arms/aidhd/skill.md`; verify `cargo test --test skill_conformance` passes.
+- [x] 3.1 Make `Done`'s id optional in `arms/aidhd/src/cli.rs`; when absent, complete the deterministic `db::next_task` selection, with `last` as an explicit alias; verify tests cover no-argument completion after `next`, another after `today`, and the no-surfaced-task error pointing at `today`.
+- [x] 3.2 Add fuzzy title resolution for `done <text>`: fall back to a case-insensitive unique pending-title match, list candidates and complete nothing on ambiguity; verify tests cover the unique and ambiguous cases and that an ambiguous run changes no task.
+- [x] 3.3 Add a completion count for the current local day and include `(N done today)` in `done` output; verify a test seeds two completions then completes a third and asserts the count.
+- [x] 3.4 Make `search` with no matches name the query, suggest `aidhd add`, and exit zero; make not-found errors point at `aidhd list`; verify tests assert the message and exit codes.
+- [x] 3.5 Add a first-run hint when the store has no tasks and a task-reading command runs; verify a test asserts the hint contains an `aidhd add` example.
+- [x] 3.6 Document argument-free `done`, the completion count, and the lookup guidance in `arms/aidhd/skill.md`; verify `cargo test --test skill_conformance` passes.
 
 ## 4. Reminder setup
 

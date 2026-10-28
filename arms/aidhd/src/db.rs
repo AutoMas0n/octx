@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use chrono::{Duration, Local, NaiveDate, NaiveTime, SecondsFormat, Utc};
+use chrono::{DateTime, Duration, Local, NaiveDate, NaiveTime, SecondsFormat, Utc};
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 use thiserror::Error;
 use uuid::Uuid;
@@ -432,6 +432,40 @@ pub fn search_tasks(conn: &Connection, query: &str) -> Result<Vec<Task>> {
         ..TaskFilter::default()
     };
     list_tasks(conn, &filter)
+}
+
+/// Pending tasks whose title contains `text`, case-insensitively.
+pub fn pending_title_matches(conn: &Connection, text: &str) -> Result<Vec<Task>> {
+    let needle = text.to_lowercase();
+    let tasks = list_tasks(
+        conn,
+        &TaskFilter {
+            status: Some(Status::Pending),
+            ..TaskFilter::default()
+        },
+    )?;
+    Ok(tasks
+        .into_iter()
+        .filter(|task| task.title.to_lowercase().contains(&needle))
+        .collect())
+}
+
+/// How many tasks were completed on `today` in the local time zone.
+pub fn completed_on(conn: &Connection, today: NaiveDate) -> Result<i64> {
+    let mut stmt = conn.prepare(
+        "SELECT completed_at FROM tasks WHERE status = 'completed' AND completed_at IS NOT NULL",
+    )?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    let mut count = 0;
+    for row in rows {
+        let stamp = row?;
+        if let Ok(utc) = DateTime::parse_from_rfc3339(&stamp)
+            && utc.with_timezone(&Local).date_naive() == today
+        {
+            count += 1;
+        }
+    }
+    Ok(count)
 }
 
 /// Count tasks by status.
