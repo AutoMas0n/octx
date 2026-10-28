@@ -1,7 +1,7 @@
 # aidhd-secretary Specification
 
 ## Purpose
-TBD - created by archiving change aidhd-secretary. Update Purpose after archive.
+The `aidhd-secretary` is the scheduling brain behind the `aidhd` arm: it runs a deterministic, idempotent pass that decomposes stuck tasks, fills undated work into free capacity, reschedules overdue items, resolves conflicts and overload, catches up recurring tasks, and honors pinned and fixed tasks — all without a daemon. The deterministic policy runs first and an optional LLM tie-break may only reorder equal candidates; every decision is logged so it can be undone. Notifications respect a budget and quiet hours and deduplicate via `notified_at`, while a health check confirms the scheduler is installed. This specification defines that behaviour so the secretary stays predictable, offline-friendly, and safe to run from cron or a single invocation.
 
 ## Requirements
 
