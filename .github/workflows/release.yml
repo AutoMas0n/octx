@@ -107,7 +107,7 @@ jobs:
         env:
           BUILDER: ${{ matrix.target == 'aarch64-unknown-linux-musl' && 'cross' || 'cargo' }}
         run: |
-          for arm in octx-fmt octx-parse octx-deploy octx-agent octx-harness octx-jam octx-aidhd; do
+          for arm in octx-fmt octx-parse octx-deploy octx-agent octx-harness octx-jam octx-aidhd octx-pi-sync-arm; do
             $BUILDER build -p "$arm" --target ${{ matrix.target }} --release
           done
       - name: Prepare artifacts
@@ -118,7 +118,7 @@ jobs:
           gzip -c octx > "artifacts/octx-${{ matrix.target }}.gz"
           sha256sum "artifacts/octx-${{ matrix.target }}.gz" | cut -d' ' -f1 > "artifacts/octx-${{ matrix.target }}.gz.sha256"
           # Arms
-          for arm in fmt parse deploy agent harness jam aidhd; do
+          for arm in fmt parse deploy agent harness jam aidhd pi-sync; do
             cp "target/${{ matrix.target }}/release/$arm" "$arm"
             gzip -c "$arm" > "artifacts/$arm-${{ matrix.target }}.gz"
             sha256sum "artifacts/$arm-${{ matrix.target }}.gz" | cut -d' ' -f1 > "artifacts/$arm-${{ matrix.target }}.gz.sha256"
@@ -148,9 +148,19 @@ jobs:
           shopt -s nullglob
           missing=""
           shipped=0
+          # Anchor on the known target suffix, not the first hyphen: an arm named
+          # `pi-sync` would otherwise parse as `bin=pi` and fail this check.
+          TARGETS="x86_64-unknown-linux-musl aarch64-unknown-linux-musl arm-unknown-linux-gnueabihf aarch64-linux-android armv7-linux-androideabi x86_64-linux-android"
           for f in artifacts/artifacts-*/*.gz.sha256; do
             name=$(basename "$f" .gz.sha256)   # e.g. fmt-aarch64-linux-android
-            bin=${name%%-*}                    # fmt
+            bin=""
+            for t in $TARGETS; do
+              case "$name" in *-"$t") bin="${name%-$t}"; break ;; esac
+            done
+            if [ -z "$bin" ]; then
+              echo "::error::cannot parse arm name from artifact \"$name\" — is its target in TARGETS?" >&2
+              exit 1
+            fi
             [ "$bin" = "octx" ] && continue   # the head is not an arm
             shipped=$((shipped + 1))
             if [ ! -f "arms/$bin/skill.md" ]; then
@@ -184,11 +194,15 @@ jobs:
 
           # Discover binaries/targets from the built artifacts so this can never
           # drift out of sync with the release matrix again.
+          TARGETS="x86_64-unknown-linux-musl aarch64-unknown-linux-musl arm-unknown-linux-gnueabihf aarch64-linux-android armv7-linux-androideabi x86_64-linux-android"
           SHAS=$(
             for f in artifacts/artifacts-*/*.gz.sha256; do
               name=$(basename "$f" .gz.sha256)   # e.g. fmt-aarch64-linux-android
-              bin=${name%%-*}                    # fmt
-              target=${name#*-}                  # aarch64-linux-android
+              # Anchor on the target suffix so a hyphenated arm (`pi-sync`) parses.
+              bin=""; target=""
+              for t in $TARGETS; do
+                case "$name" in *-"$t") bin="${name%-$t}"; target="$t"; break ;; esac
+              done
               jq -n --arg b "$bin" --arg t "$target" --arg s "$(cat "$f")" \
                 '{bin: $b, target: $t, sha: $s}'
             done | jq -s 'group_by(.bin)
@@ -218,6 +232,7 @@ jobs:
                 agent: "Headless ACP agent runner with a tool plane and script socket",
                 harness: "Resolves harness definitions and dispatches them to the agent arm",
                 jam: "ListenBrainz recommendations into a Qobuz playlist, and listens back into ListenBrainz",
+                "pi-sync": "Carries user-authored pi configuration between devices through an untrusted medium",
                 aidhd: "One-shot task store with a deterministic secretary, a decision log you can undo, and on-demand voice capture" };
 
             {

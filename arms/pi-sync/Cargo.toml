@@ -1,0 +1,12 @@
+[package]
+name = "octx-pi-sync-arm"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "pi-sync"
+path = "src/main.rs"
+
+[dependencies]
+octx-pi-sync.workspace = true
+anyhow.workspace = true

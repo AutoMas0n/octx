@@ -1,0 +1,22 @@
+[package]
+name = "octx-pi-sync"
+version.workspace = true
+edition.workspace = true
+description = "Carry user-authored pi configuration between devices through an untrusted medium"
+
+[dependencies]
+octx-creds.workspace = true
+clap.workspace = true
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+dirs = "6"
+fs2 = "0.4"
+hex = "0.4"
+rand = "0.8"
+argon2 = "0.5"
+aes-gcm = "0.10"
+
+[dev-dependencies]
+tempfile = "3"

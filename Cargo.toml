@@ -3,13 +3,14 @@ members = ["arms/*", "crates/*"]
 resolver = "2"
 
 [workspace.package]
-version = "0.8.1"
+version = "0.9.0"
 edition = "2024"
 
 [workspace.dependencies]
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 octx-creds = { path = "crates/octx-creds" }
+octx-pi-sync = { path = "crates/octx-pi-sync" }
 
 [package]
 name = "octx"
